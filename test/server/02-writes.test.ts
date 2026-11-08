@@ -223,3 +223,34 @@ test("write filter and scan: a reviewed member of a never-allowed namespace (os.
     await lenient.stop();
   }
 });
+
+test("write filter: a page whose check does not end within the time limit is refused and nothing is written; another request is answered meanwhile", async () => {
+  // The Markdown parser is quadratic on image openers that never close: 100 KB of them takes seconds,
+  // 1 MB minutes (docs/security.md, section 5). The 1 MB page is refused on any machine; the 100 KB
+  // one is refused where the parse takes more than the limit, and is data where it does not.
+  const slow = (n: number) => "![a](".repeat(n);
+  const big = track(unique("Projects/Slow"));
+  const t0 = performance.now();
+  const pending = alice.call("create-note", { filename: big, content: slow(199_999) }); // 999 995 characters: under the page limit
+  const other = await bob.call("list-spaces");
+  const otherMs = performance.now() - t0;
+  assert.equal(other.isError, false, other.text);
+  assert.ok(otherMs < 1500, `list-spaces took ${Math.round(otherMs)} ms while the check ran`);
+  const refused = await pending;
+  const ms = performance.now() - t0;
+  assert.equal(refused.isError, true, "accepted?");
+  assert.match(refused.text, /^Refused by the write filter: the check took more than 2000 ms: the page's Markdown is too costly to parse, so whether it holds code is undecidable\. Nothing was written\./);
+  assert.ok(ms >= 2000 && ms < 6000, `${Math.round(ms)} ms`);
+  assert.equal((await sb.read(T.alice, "alpha", `${big}.md`)).status, 404, "nothing was written");
+
+  const medium = track(unique("Projects/Slow"));
+  const t1 = performance.now();
+  const r = await alice.call("create-note", { filename: medium, content: slow(20_000) });
+  assert.ok(performance.now() - t1 < 6000, `${Math.round(performance.now() - t1)} ms`);
+  if (r.isError) {
+    assert.match(r.text, /^Refused by the write filter: the check took more than 2000 ms/);
+    assert.equal((await sb.read(T.alice, "alpha", `${medium}.md`)).status, 404, "nothing was written");
+  } else {
+    assert.equal((await sb.read(T.alice, "alpha", `${medium}.md`)).status, 200, "decided in time: the page is data, and written");
+  }
+});

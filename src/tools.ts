@@ -13,7 +13,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { AccessList, Right, Subject } from "./access.ts";
 import { renderersWithoutRead, rightsText } from "./access.ts";
 import type { Allowlist } from "./filter/allowlist.ts";
-import { checkPage, describe, isCodePlace, TRANSCLUSION_RULE } from "./filter/filter.ts";
+import { describe, isCodePlace, TRANSCLUSION_RULE, type Verdict } from "./filter/filter.ts";
+import { checkPageLimited, CheckTimeout } from "./filter/check.ts";
 import { pageNameOf } from "./access.ts";
 import type { Credential } from "./credentials.ts";
 import { diffOf, prepareEdits } from "./edit.ts";
@@ -186,20 +187,27 @@ export function registerTools(server: McpServer, ctx: Context) {
 
   /**
    * The write filter on the page that would result (docs/security.md, section 5): no code, and no
-   * transclusion of a page that the writer, or a user who may render this page, may not read.
+   * transclusion of a page that the writer, or a user who may render this page, may not read. The
+   * check runs in a worker with a time limit; a page it cannot decide in time is refused too.
    */
-  const checkContent = (space: string, file: string, content: string) => {
+  const checkContent = async (space: string, file: string, content: string) => {
     if (!file.toLowerCase().endsWith(".md") || isCodePlace(pageNameOf(file))) return;
     const page = pageNameOf(file);
-    const verdict = checkPage(content, allow, {
-      page,
-      denied(target) {
-        if (!rightsOn(space, target).has("r")) return `user "${user.user}" has no "r" on ${space}/${target}`;
-        // Other users are not named to the writer; the report page names them to the operator.
-        if (renderersWithoutRead(acl, subjects, space, page, target).length) return `a user who may render this page ("x") has no "r" on ${space}/${target}`;
-        return null;
-      },
-    });
+    let verdict: Verdict;
+    try {
+      verdict = await checkPageLimited(content, allow, {
+        page,
+        denied(target) {
+          if (!rightsOn(space, target).has("r")) return `user "${user.user}" has no "r" on ${space}/${target}`;
+          // Other users are not named to the writer; the report page names them to the operator.
+          if (renderersWithoutRead(acl, subjects, space, page, target).length) return `a user who may render this page ("x") has no "r" on ${space}/${target}`;
+          return null;
+        },
+      });
+    } catch (e) {
+      if (e instanceof CheckTimeout) throw new Refusal("write-filter", `Refused by the write filter: ${e.message}. Nothing was written. Split the page, or simplify its Markdown (docs/security.md, section 5).`);
+      throw e;
+    }
     if (verdict.ok) return;
     const code = verdict.violations.filter((v) => v.rule !== TRANSCLUSION_RULE);
     const transclusions = verdict.violations.filter((v) => v.rule === TRANSCLUSION_RULE);
@@ -498,7 +506,7 @@ export function registerTools(server: McpServer, ctx: Context) {
       need(s, file, "w");
       checkFileType(file);
       const body = encoding === "base64" ? Buffer.from(content, "base64") : content;
-      if (typeof body === "string") checkContent(s, file, body);
+      if (typeof body === "string") await checkContent(s, file, body);
       const r = await sb.write(token, s, file, body, overwrite ? {} : { ifNoneMatch: "*" }).catch((e) => {
         if (e instanceof SbError && e.status === 412 && !overwrite) throw new Refusal("revision", `${file} already exists in ${s}. Use edit-note, or overwrite=true.`);
         throw e;
@@ -555,7 +563,7 @@ export function registerTools(server: McpServer, ctx: Context) {
       }
       const changed = prepared.content !== original.text;
       if (prepared.content.length > PAGE_LIMIT) throw new Refusal("input", `The page would be longer than ${PAGE_LIMIT} characters. Nothing was written.`);
-      if (changed) checkContent(s, file, prepared.content);
+      if (changed) await checkContent(s, file, prepared.content);
       const { diff, truncated } = diffOf(file, original.text, prepared.content);
       let revision: string | null = original.etag;
       if (!dryRun && changed) {

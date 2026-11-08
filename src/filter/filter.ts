@@ -173,7 +173,38 @@ export function isCodePlace(page: string): boolean {
   return page === "CONFIG" || page === "CONFIG.md" || page.startsWith("Library/");
 }
 
+/**
+ * What the parse finds in a page: the code violations, and the transclusions outside code, whose
+ * targets are judged apart (`verdictOf`), because that needs the access list. This is the part that
+ * runs in the worker of check.ts; it holds nothing but data.
+ */
+export type Analysis = {
+  violations: Violation[];
+  directives: number;
+  transclusions: Array<Transclusion & { line: number }>;
+};
+
 export function checkPage(source: string, allow: Allowlist, transclusion?: TransclusionCheck): Verdict {
+  return verdictOf(source, analysePage(source, allow), transclusion);
+}
+
+/** The verdict from an analysis: its code violations, plus one per transclusion whose target the reader may not read. */
+export function verdictOf(source: string, analysis: Analysis, transclusion?: TransclusionCheck): Verdict {
+  const violations = [...analysis.violations];
+  if (transclusion) {
+    for (const t of analysis.transclusions) {
+      for (const target of transclusionTargets(t.raw, transclusion.page, t.image)) {
+        const why = transclusion.denied(target);
+        if (!why) continue;
+        violations.push({ rule: TRANSCLUSION_RULE, detail: `${source.slice(t.from, Math.min(t.to, t.from + 60))}: ${why}`, line: t.line, from: t.from, to: t.to });
+        break; // one reason per transclusion
+      }
+    }
+  }
+  return { ok: violations.length === 0, violations, directives: analysis.directives };
+}
+
+export function analysePage(source: string, allow: Allowlist): Analysis {
   const violations: Violation[] = [];
   const lineOf = lineIndex(source);
   const tree = mdParser.parse(source);
@@ -224,7 +255,7 @@ export function checkPage(source: string, allow: Allowlist, transclusion?: Trans
     loop: for (; pos + len < source.length; len++) {
       if (--budget < 0) {
         violations.push({ rule: "too-complex", detail: "too many unclosed ${ for the filter to check", line: lineOf(pos), from: pos, to: pos + 2 });
-        return { ok: false, violations, directives };
+        return { violations, directives, transclusions: [] };
       }
       switch (source[pos + len]) {
         case "{": depth++; break;
@@ -250,19 +281,11 @@ export function checkPage(source: string, allow: Allowlist, transclusion?: Trans
 
   // Transclusions: SilverBullet expands them wherever they stand outside code, HTML blocks, HTML
   // comments and the frontmatter included, so they are found on the raw text like the baked markers.
-  if (transclusion) {
-    for (const t of findTransclusions(source)) {
-      if (inCode(t.from)) continue;
-      for (const target of transclusionTargets(t.raw, transclusion.page, t.image)) {
-        const why = transclusion.denied(target);
-        if (!why) continue;
-        violations.push({ rule: TRANSCLUSION_RULE, detail: `${source.slice(t.from, Math.min(t.to, t.from + 60))}: ${why}`, line: lineOf(t.from), from: t.from, to: t.to });
-        break; // one reason per transclusion
-      }
-    }
-  }
+  const transclusions = findTransclusions(source)
+    .filter((t) => !inCode(t.from))
+    .map((t) => ({ ...t, line: lineOf(t.from) }));
 
-  return { ok: violations.length === 0, violations, directives };
+  return { violations, directives, transclusions };
 }
 
 type Reason = { rule: string; detail: string };

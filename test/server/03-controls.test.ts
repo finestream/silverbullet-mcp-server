@@ -232,3 +232,28 @@ test("CLI scan: `--scan` reports per space and exits 1 with findings; quarantine
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("scan: a page whose check does not end within the time limit is a finding on the whole page (line 0) that blocks rendering; the page is left as it is", async () => {
+  const planted = unique("Slow");
+  const source = "![a](".repeat(199_999); // 1 MB of image openers that never close: minutes in the Markdown parser without the limit
+  await sb.write(T.admin, "beta", `${planted}.md`, source);
+  let server: RunningServer | undefined;
+  let bob: McpClient | undefined;
+  try {
+    const t0 = performance.now();
+    server = await startServer({ accessList: BETA_ACCESS });
+    assert.ok(performance.now() - t0 < 15_000, `the start scan took ${Math.round(performance.now() - t0)} ms`);
+    bob = await connect(server.url, BEARERS.bob);
+    const spaces = await bob.call("list-spaces");
+    const beta = (spaces.data!.spaces as Array<{ space: string; renderBlocked: string | null }>).find((s) => s.space === "beta")!;
+    assert.match(beta.renderBlocked ?? "", /^Rendering is blocked in space "beta": the last scan found 1 finding\(s\) on 1 page\(s\)/);
+    const report = await bob.call("read-note", { filename: "MCP Server" });
+    assert.equal(report.isError, false, report.text);
+    assert.match(report.data!.content, new RegExp(`\\| \\[\\[${planted}\\]\\] \\| 0 \\| \`timeout\` \\| \`the check took more than 2000 ms: `));
+    assert.equal((await sb.read(T.admin, "beta", `${planted}.md`)).text, source, "the page is left as it is");
+  } finally {
+    await sb.remove(T.admin, "beta", `${planted}.md`);
+    await bob?.close();
+    await server?.stop();
+  }
+});
