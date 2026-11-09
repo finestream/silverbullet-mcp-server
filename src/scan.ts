@@ -4,7 +4,8 @@
 // CONFIG and Library/ hold code, which files are not pages; the report page
 // per space; the quarantine when the operator chose it.
 
-import { checkPage, isCodePlace, type TransclusionCheck, type Violation } from "./filter/filter.ts";
+import { checkPage, isCodePlace, type TransclusionCheck, type Verdict, type Violation } from "./filter/filter.ts";
+import { checkPageLimited, CheckTimeout } from "./filter/check.ts";
 import { compileAllowlist, type Allowlist } from "./filter/allowlist.ts";
 import { pageNameOf, pathMatches, renderersWithoutRead, type AccessList, type Subject } from "./access.ts";
 import { SbError, type SilverBullet, type SbFile } from "./sb.ts";
@@ -12,6 +13,9 @@ import type { Config } from "./config.ts";
 import type { State, SpaceState, Finding, FileFinding } from "./state.ts";
 import type { Log } from "./log.ts";
 import { parser as mdParser } from "@lezer/markdown";
+
+/** The rule of a page whose check did not end within the limit (docs/security.md, section 7). */
+export const TIMEOUT_RULE = "timeout";
 
 /** The index-time transform block, verbatim as in docs/security.md, section 10. The checks in test/ assert that. */
 export const SHIPPED_TRANSFORM = `-- Shipped with the MCP server. Keep verbatim; the server checks for it at start.
@@ -189,12 +193,22 @@ export class Scanner {
       const read = await sb.read(token, space, f.name);
       const source = read.body.toString("utf8");
       const transclusion = this.transclusionCheck(space, page);
-      const verdict = checkPage(source, allow, transclusion);
+      let verdict: Verdict;
+      try {
+        verdict = await checkPageLimited(source, allow, transclusion);
+      } catch (e) {
+        if (!(e instanceof CheckTimeout)) throw e;
+        // Undecidable within the limit: a finding on the whole page (line 0), never quarantined,
+        // since the neutralised page could not be checked either.
+        findings.push({ page, line: 0, rule: TIMEOUT_RULE, detail: e.message });
+        log.warn("scan.timeout", { space, page, size: source.length });
+        continue;
+      }
       if (verdict.ok) continue;
       if (config.scanMode === "quarantine") {
         const neutralised = quarantine(source, verdict.violations);
         // The neutralised page must pass the filter itself; otherwise it stays a finding.
-        if (checkPage(neutralised, allow, transclusion).ok) {
+        if (await checkPageLimited(neutralised, allow, transclusion).then((v) => v.ok, () => false)) {
           try {
             await sb.write(token, space, f.name, neutralised, { ifMatch: read.etag ?? undefined });
             quarantined.push(page);
