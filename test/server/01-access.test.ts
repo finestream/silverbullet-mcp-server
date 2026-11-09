@@ -134,6 +134,39 @@ test("access: two users see different listings of the same space; carol sees not
   assert.match(c.text, /SilverBullet refused/);
 });
 
+test("access: list-notes shows the effective rights, not SilverBullet's: `r` under a `-` parent reads read-only; `rw` in the list reads read-only where SilverBullet grants read", async () => {
+  // alice: SilverBullet write on alpha; the list gives @agents `-` on Library/ and her own `r` on Library/Mine below it.
+  const s = await startServer({ accessList: DEFAULT_ACCESS_LIST + "alice alpha Library/Mine r\n" });
+  const a = await connect(s.url, BEARERS.alice);
+  const b = await connect(s.url, BEARERS.bob);
+  try {
+    const listed = await a.call("list-notes", { namePattern: "^Library/" });
+    assert.equal(listed.isError, false, listed.text);
+    const notes = listed.data!.notes as Array<{ name: string; rights: string; perm: string }>;
+    assert.deepEqual(notes.map((n) => [n.name, n.rights, n.perm]), [["Library/Mine.md", "r", "ro"]], "the `r` entry under the `-` parent: read-only, although SilverBullet grants write");
+    assert.match(listed.text, /^- Library\/Mine\.md \(read-only: r\)$/m);
+    const edit = await a.call("edit-note", { filename: "Library/Mine", expectedRevision: '"sha256:0000"', edits: [{ oldText: "a", newText: "b" }] });
+    assert.equal(edit.isError, true);
+    assert.match(edit.text, /has no "w" on alpha\/Library\/Mine \(effective rights: r\)/, "the refusal reports the same rights as the listing");
+
+    const own = await a.call("list-notes", { namePattern: "^(Projects/One|Outside)\\.md$" });
+    const ownNotes = own.data!.notes as Array<{ name: string; rights: string; perm: string }>;
+    assert.deepEqual(ownNotes.map((n) => [n.name, n.rights, n.perm]), [["Outside.md", "r", "ro"], ["Projects/One.md", "rw", "rw"]], "`r` on the space, `rw` under Projects/: as the list says");
+    assert.match(own.text, /^- Projects\/One\.md \(read-write: rw\)$/m);
+
+    // bob: the list gives @agents `rw` under Projects/, SilverBullet grants him read on alpha: the ceiling holds.
+    const ceiling = await b.call("list-notes", { space: "alpha", namePattern: "^Projects/" });
+    assert.equal(ceiling.isError, false, ceiling.text);
+    const bobNotes = ceiling.data!.notes as Array<{ name: string; rights: string; perm: string }>;
+    assert.ok(bobNotes.length >= 2, ceiling.text);
+    assert.ok(bobNotes.every((n) => n.rights === "r" && n.perm === "ro"), `bob's listing: ${ceiling.text}`);
+    assert.ok(!ceiling.text.includes("read-write"), ceiling.text);
+  } finally {
+    await Promise.all([a.close(), b.close()]);
+    await s.stop();
+  }
+});
+
 test("input: names with dot segments, control characters or backslashes, and malformed space names are refused before any call", async () => {
   for (const filename of ["../CONFIG", "Agent/../../CONFIG", ".hidden", "Agent/.git/x", "a\\b", "Agent//x", "x\u0000y"]) {
     const r = await alice.call("read-note", { filename });

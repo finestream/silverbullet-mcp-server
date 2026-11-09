@@ -10,7 +10,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import type { AccessList, Right, Subject } from "./access.ts";
+import type { AccessList, Right, Rights, Subject } from "./access.ts";
 import { renderersWithoutRead, rightsText } from "./access.ts";
 import type { Allowlist } from "./filter/allowlist.ts";
 import { describe, isCodePlace, TRANSCLUSION_RULE, type Verdict } from "./filter/filter.ts";
@@ -55,9 +55,10 @@ export class Refusal extends Error {
 
 const LISTING_TTL = 30_000;
 
-/** Listings per (user, space), 30 s; page contents per (user, space, file, lastModified), bounded. Nothing is shared across users. */
+/** Listings and the space's `readOnly` flag per (user, space), 30 s; page contents per (user, space, file, lastModified), bounded. Nothing is shared across users. */
 export class Cache {
   private listings = new Map<string, { files: SbFile[]; expires: number }>();
+  private readOnly = new Map<string, { value: boolean; expires: number }>();
   private contents = new Map<string, string>();
 
   listing(user: string, space: string): SbFile[] | null {
@@ -66,6 +67,13 @@ export class Cache {
   }
   setListing(user: string, space: string, files: SbFile[]) {
     this.listings.set(`${user}\n${space}`, { files, expires: Date.now() + LISTING_TTL });
+  }
+  spaceReadOnly(user: string, space: string): boolean | null {
+    const e = this.readOnly.get(`${user}\n${space}`);
+    return e && e.expires > Date.now() ? e.value : null;
+  }
+  setSpaceReadOnly(user: string, space: string, value: boolean) {
+    this.readOnly.set(`${user}\n${space}`, { value, expires: Date.now() + LISTING_TTL });
   }
   invalidate(user: string, space: string) {
     this.listings.delete(`${user}\n${space}`);
@@ -175,6 +183,26 @@ export function registerTools(server: McpServer, ctx: Context) {
 
   /** The files of a space the user may read. */
   const visible = async (space: string) => (await listing(space)).filter((f) => rightsOn(space, f.name).has("r"));
+
+  /** Whether SilverBullet grants this user read only in the space (`/.config`; the `perm` field of the listing does not tell, docs/architecture.md, "Access and identity"). */
+  const spaceReadOnly = async (space: string): Promise<boolean> => {
+    const cached = cache.spaceReadOnly(user.user, space);
+    if (cached !== null) return cached;
+    const value = (await sb.config(token, space)).readOnly;
+    cache.setSpaceReadOnly(user.user, space, value);
+    return value;
+  };
+
+  /**
+   * The rights the user has on a file through this server: the access list, narrowed to what
+   * SilverBullet grants (no `w` or `d` for a read-only member). What `need` reports in a refusal
+   * for the access list; `x` also needs the Runtime API, which only a render tells.
+   */
+  const effectiveRights = (space: string, file: string, readOnly: boolean): Rights => {
+    const have = rightsOn(space, file);
+    if (!readOnly) return have;
+    return new Set([...have].filter((r) => r !== "w" && r !== "d"));
+  };
 
   const checkFileType = (file: string) => {
     const lower = file.toLowerCase();
@@ -306,7 +334,7 @@ export function registerTools(server: McpServer, ctx: Context) {
     "list-notes",
     {
       title: "List notes",
-      description: "List the files of a space the user may read (pages and other files), with optional name filter and cursor paging.",
+      description: "List the files of a space the user may read (pages and other files), each with the user's effective rights through this server (the access list, within what SilverBullet grants), with optional name filter and cursor paging.",
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {
         space,
@@ -333,10 +361,15 @@ export function registerTools(server: McpServer, ctx: Context) {
       const remaining = files.filter((f) => f.name > after);
       const page = remaining.slice(0, limit);
       const nextCursor = remaining.length > page.length ? Buffer.from(page[page.length - 1].name).toString("base64url") : null;
-      const notes = page.map((f) => ({ name: f.name, perm: f.perm, size: f.size, lastModified: f.lastModified, contentType: f.contentType }));
+      // The rights shown are the effective ones, not SilverBullet's `perm` field: the access list may grant less than SilverBullet, and `perm` says `rw` even for a read-only member.
+      const readOnly = page.length ? await spaceReadOnly(s) : false;
+      const notes = page.map((f) => {
+        const rights = effectiveRights(s, f.name, readOnly);
+        return { name: f.name, rights: rightsText(rights), perm: rights.has("w") ? "rw" : "ro", size: f.size, lastModified: f.lastModified, contentType: f.contentType };
+      });
       return result(
         { space: s, notes, total, nextCursor },
-        `${s}: ${total} file(s)${namePattern ? ` matching /${namePattern}/i` : ""}\n${notes.map((n) => `- ${n.name} (${n.perm === "rw" ? "read-write" : "read-only"})`).join("\n")}${nextCursor ? `\nNext cursor: ${nextCursor}` : ""}`,
+        `${s}: ${total} file(s)${namePattern ? ` matching /${namePattern}/i` : ""}\n${notes.map((n) => `- ${n.name} (${n.perm === "rw" ? "read-write" : "read-only"}: ${n.rights})`).join("\n")}${nextCursor ? `\nNext cursor: ${nextCursor}` : ""}`,
       );
     }),
   );
