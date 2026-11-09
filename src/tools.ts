@@ -2,8 +2,9 @@
 // request for the authenticated user. Every tool resolves the space, checks
 // the refuse-to-serve state, then the access list, then calls SilverBullet as
 // that user; writes pass the file-type check and the write filter first; the
-// render tools need `x`, render pages only, and are refused while the scan
-// has findings in the space (docs/security.md, sections 7 and 12).
+// render tools need `x`, render pages only, are refused while the scan has
+// findings in the space, and return nothing when the render loaded a page or
+// file the caller may not read (docs/security.md, sections 7 and 12).
 // Tool names and input shapes follow Ahmad-A0/silverbullet-mcp (MIT) so that
 // clients written for v1 keep working.
 
@@ -20,7 +21,7 @@ import type { Credential } from "./credentials.ts";
 import { diffOf, prepareEdits } from "./edit.ts";
 import { RuntimeError, SbError, SilverBullet, type SbFile } from "./sb.ts";
 import type { State } from "./state.ts";
-import { RenderTimeout, type Renderer } from "./render.ts";
+import { judgeLoads, RenderTimeout, type Loads, type Renderer } from "./render.ts";
 import type { Config } from "./config.ts";
 import { NEVER_WRITTEN_TYPES } from "./config.ts";
 import type { Log } from "./log.ts";
@@ -41,7 +42,7 @@ export type Context = {
 };
 
 /** A refusal by one of the server's own controls; the message says which. */
-export type Control = "access-list" | "write-filter" | "file-type" | "refuse-to-serve" | "render-block" | "revision" | "input";
+export type Control = "access-list" | "write-filter" | "file-type" | "refuse-to-serve" | "render-block" | "render-check" | "revision" | "input";
 
 export class Refusal extends Error {
   readonly control: Control;
@@ -658,7 +659,22 @@ export function registerTools(server: McpServer, ctx: Context) {
     return { s, file, page: pageNameOf(file) };
   };
 
-  const RENDER_RULES = "Needs the x right; pages (.md) only; refused while the scan has findings in the space. For reading only: it returns no revision; edits are always based on read-note's source and its revision. The first call starts a headless browser for this user and space inside SilverBullet (about 200 MiB, kept until SilverBullet restarts), later calls are fast. Runs with the user's full SilverBullet rights, so transcluded or queried pages appear whatever the access list says about them.";
+  /**
+   * The render check (docs/security.md, section 12): what the render loaded, judged against the
+   * caller's `r` rights before anything is returned. Fails closed when the loads cannot be trusted.
+   */
+  const verifyLoads = (space: string, file: string) => (loads: Loads) => {
+    const { blind, denied } = judgeLoads(loads, file, (f) => rightsOn(space, f).has("r"));
+    if (blind) {
+      throw new Refusal("render-check", `Refused by the render check: cannot verify what the render loaded (${blind}). Nothing was returned. SilverBullet's client may have changed how it reads pages; operator: see docs/security.md, section 12, and the release checks.`);
+    }
+    if (denied.length) {
+      const list = denied.map((f) => `${space}/${pageNameOf(f)}: user "${user.user}" has no "r"`).join("; ");
+      throw new Refusal("render-check", `Refused by the render check: the render loaded what its reader may not read (${list}). Nothing was returned. A render shows what SilverBullet lets this user see; this server returns it only when the access list lets the user read it (docs/security.md, section 12).`);
+    }
+  };
+
+  const RENDER_RULES = "Needs the x right; pages (.md) only; refused while the scan has findings in the space. For reading only: it returns no revision; edits are always based on read-note's source and its revision. The first call starts a headless browser for this user and space inside SilverBullet (about 200 MiB, kept until SilverBullet restarts), later calls are fast. Runs with the user's full SilverBullet rights; the result is refused when the render loaded a page or file (a transclusion, an image) the user has no r on in the access list. Query results come from SilverBullet's index and are not checked.";
 
   server.registerTool(
     "render-note",
@@ -673,8 +689,8 @@ export function registerTools(server: McpServer, ctx: Context) {
     },
     tool("render-note", async ({ space: sp, filename }) => {
       const { s, file, page } = await renderable(sp, filename);
-      const r = await renderer.render(user, s, page);
-      const data = { space: s, filename: file, content: r.markdown, totalCharacters: r.markdown.length, warnings: r.warnings, queuedMs: r.queuedMs, indexWaitMs: r.indexWaitMs, rebooted: r.rebooted };
+      const r = await renderer.render(user, s, page, verifyLoads(s, file));
+      const data = { space: s, filename: file, content: r.markdown, totalCharacters: r.markdown.length, loaded: r.loaded, warnings: r.warnings, queuedMs: r.queuedMs, indexWaitMs: r.indexWaitMs, rebooted: r.rebooted };
       return result(data, r.markdown + (r.warnings.length ? `\n\n[Warning: ${r.warnings.join(" ")}]` : ""));
     }),
   );
@@ -694,8 +710,8 @@ export function registerTools(server: McpServer, ctx: Context) {
     },
     tool("screenshot-note", async ({ space: sp, filename, selector, fullPage }) => {
       const { s, file, page } = await renderable(sp, filename);
-      const r = await renderer.screenshot(user, s, page, { selector, fullPage });
-      const data = { space: s, filename: file, mimeType: "image/png", bytes: r.png.length, width: r.width, height: r.height, selector: selector ?? null, fullPage, warnings: r.warnings, queuedMs: r.queuedMs, indexWaitMs: r.indexWaitMs, rebooted: r.rebooted };
+      const r = await renderer.screenshot(user, s, page, { selector, fullPage }, verifyLoads(s, file));
+      const data = { space: s, filename: file, mimeType: "image/png", bytes: r.png.length, width: r.width, height: r.height, selector: selector ?? null, fullPage, loaded: r.loaded, warnings: r.warnings, queuedMs: r.queuedMs, indexWaitMs: r.indexWaitMs, rebooted: r.rebooted };
       return {
         content: [
           { type: "text", text: `Screenshot of ${s}/${page}: ${r.width}x${r.height} PNG, ${r.png.length} bytes${selector ? `, clipped to ${selector}` : ""}${r.warnings.length ? `\n[Warning: ${r.warnings.join(" ")}]` : ""}` },

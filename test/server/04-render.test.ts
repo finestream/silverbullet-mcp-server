@@ -340,3 +340,47 @@ test("read-note and the other source tools never touch /.runtime/*; the render t
     proxy.close();
   }
 });
+
+test("render check: a transclusion an expression builds passes the write filter; the screenshot that would show it is refused, render-note leaves it as text; the next screenshot is clean", async () => {
+  // The case the write filter cannot see: the target's name is built at run time (docs/security.md, section 12).
+  const name = track(unique("Projects/Built"));
+  const c = await alice.call("create-note", { space: "gamma", filename: name, content: 'Intro\n\n${"![[" .. "CONFIG]]"}\n\nOutro\n' });
+  assert.equal(c.isError, false, c.text);
+  const shot = await alice.call("screenshot-note", { space: "gamma", filename: name });
+  assert.equal(shot.isError, true, "the screenshot would show CONFIG");
+  assert.match(shot.text, /^Refused by the render check: the render loaded what its reader may not read \(gamma\/CONFIG: user "alice" has no "r"\)\. Nothing was returned\./);
+  assert.equal(shot.image, undefined, "no image content");
+  const md = await alice.call("render-note", { space: "gamma", filename: name });
+  assert.equal(md.isError, false, md.text);
+  assert.match(md.data!.content, /\n!\[\[CONFIG\]\]\n/, "the Runtime API's expansion leaves the built transclusion as text");
+  assert.doesNotMatch(md.data!.content, /agentTest|tag\.define/, "nothing of CONFIG");
+  assert.equal(md.data!.loaded, 1, "only the page itself was loaded");
+  // The refused page is left; the runtime is parked between screenshots, so its loads do not taint the next one.
+  const next = await alice.call("screenshot-note", { space: "gamma", filename: "Rendered", selector: "#sb-editor" });
+  assert.equal(next.isError, false, next.text);
+  assert.equal(next.data!.loaded, 2, "Rendered and its transclusion Projects/One");
+  const again = await alice.call("screenshot-note", { space: "gamma", filename: "Rendered", selector: "#sb-editor" });
+  assert.equal(again.isError, false, again.text);
+  assert.equal(again.data!.loaded, 2, "the same page again: its transclusion is loaded again, not kept from the screenshot before");
+  const lines = server.logs.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((l) => l?.event === "request" && l.tool === "screenshot-note");
+  assert.ok(lines.some((l) => l.outcome === "refused:render-check"), "the refusal is logged by its control");
+});
+
+test("render check: a page written by another route that transcludes CONFIG is refused by both render tools at once, before any scan", async () => {
+  const name = unique("Projects/Direct");
+  await sb.write(T.admin, "gamma", `${name}.md`, "Written in the editor.\n\n![[CONFIG]]\n");
+  try {
+    const md = await alice.call("render-note", { space: "gamma", filename: name });
+    assert.equal(md.isError, true, md.text);
+    assert.match(md.text, /^Refused by the render check: the render loaded what its reader may not read \(gamma\/CONFIG: user "alice" has no "r"\)/);
+    assert.doesNotMatch(md.text, /agentTest|tag\.define/, "nothing of CONFIG");
+    const shot = await alice.call("screenshot-note", { space: "gamma", filename: name });
+    assert.equal(shot.isError, true, shot.text);
+    assert.match(shot.text, /^Refused by the render check: .*gamma\/CONFIG/);
+    const clean = await alice.call("render-note", { space: "gamma", filename: "Rendered" });
+    assert.equal(clean.isError, false, clean.text);
+    assert.equal(clean.data!.loaded, 2, "Rendered and Projects/One");
+  } finally {
+    await sb.remove(T.admin, "gamma", `${name}.md`);
+  }
+});

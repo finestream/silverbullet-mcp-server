@@ -9,7 +9,11 @@
 // confirmed them; after a bounded wait the fallback is `system.reboot()` on
 // that runtime, which re-indexes the space. The render script shadows the
 // writing functions of `space` for the call; that is best-effort, documented
-// as such: what makes rendering safe is that pages hold no code.
+// as such: what makes rendering safe is that pages hold no code. What a
+// render loaded is read from the browser's resource timing (the render check
+// of docs/security.md, section 12): every file the client fetched from the
+// space while the page was expanded or shown, judged against the caller's
+// `r` rights before anything is returned.
 
 import { RuntimeError, type SilverBullet } from "./sb.ts";
 import type { Credential } from "./credentials.ts";
@@ -33,6 +37,74 @@ export function luaString(s: string): string {
   const eq = "=".repeat(level);
   return `[${eq}[\n${s}]${eq}]`; // Lua drops a newline right after the opening bracket
 }
+
+/**
+ * The render check (docs/security.md, section 12). The headless client reads every page and file
+ * over HTTP, so the browser's resource timing holds what a render loaded. Measured on 2.12.1:
+ * there is no service worker and no page cache (a second navigation fetches again); navigating
+ * to the page already shown re-fetches the page but not its transclusions, so a screenshot
+ * leaves the page first; fetches of a page one leaves can land after the navigation returned,
+ * so the runtime is parked on a blank page between screenshots.
+ */
+export const LOADS_BUFFER = 5000;
+/** A page that does not exist, shown between screenshots; SilverBullet creates nothing for it (measured on 2.12.1). */
+export const BLANK_PAGE = "_sbmcp/blank";
+const LOADS_BEGIN_JS = `(() => { const p = performance; p.setResourceTimingBufferSize(${LOADS_BUFFER}); p.clearResourceTimings(); window.__sbmcpFull = false; p.onresourcetimingbufferfull = () => { window.__sbmcpFull = true; }; return true; })()`;
+const LOADS_READ_JS = `JSON.stringify({full: window.__sbmcpFull === true, urls: performance.getEntriesByType("resource").map((e) => e.name)})`;
+const LOADS_BEGIN = `js.window.eval(${luaString(LOADS_BEGIN_JS)})`;
+const LOADS_READ = `js.window.eval(${luaString(LOADS_READ_JS)})`;
+
+/** What a render loaded: the files of the space the client fetched, in order and without repeats, and whether the browser dropped entries. */
+export type Loads = { files: string[]; full: boolean; entries: number };
+
+/** The path of a file of `space` behind a resource-timing URL, decoded; null for anything else (the listing, another origin's resource, the blank page). */
+export function loadedPath(url: string, space: string): string | null {
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    return null;
+  }
+  const prefix = `/${space}/.fs/`;
+  if (!pathname.startsWith(prefix) || pathname.length === prefix.length) return null;
+  let path: string;
+  try {
+    path = decodeURIComponent(pathname.slice(prefix.length));
+  } catch {
+    return null;
+  }
+  return path === `${BLANK_PAGE}.md` ? null : path;
+}
+
+/** The loads as the read script returns them (a JSON string) turned into paths of the space. */
+export function parseLoads(raw: unknown, space: string): Loads {
+  if (typeof raw !== "string") throw new Error("the runtime returned no resource timing");
+  const json = JSON.parse(raw) as { full?: unknown; urls?: unknown };
+  const urls = Array.isArray(json.urls) ? json.urls.filter((u): u is string => typeof u === "string") : [];
+  const files = [...new Set(urls.map((u) => loadedPath(u, space)).filter((p): p is string => p !== null))];
+  return { files, full: json.full === true, entries: urls.length };
+}
+
+export type LoadsJudgement = {
+  /** Why the loads cannot be trusted, or null: the check then fails closed (docs/security.md, section 12). */
+  blind: string | null;
+  /** The files loaded that the caller may not read, the rendered page itself excepted (`x` suffices for it). */
+  denied: string[];
+};
+
+/**
+ * Judges what a render of `file` loaded against `mayRead`. Blind when the rendered page's own read
+ * is missing (the client no longer reads over HTTP, or not from `/.fs/`) or the buffer overflowed.
+ */
+export function judgeLoads(loads: Loads, file: string, mayRead: (file: string) => boolean): LoadsJudgement {
+  let blind: string | null = null;
+  if (loads.full) blind = `the browser dropped entries: more than ${LOADS_BUFFER} resources were loaded`;
+  else if (!loads.files.includes(file)) blind = `the page's own read is missing from the browser's resource timing (${loads.entries} entries)`;
+  return { blind, denied: loads.files.filter((f) => f !== file && !mayRead(f)) };
+}
+
+/** Called with what a render loaded before anything is returned; throws to refuse. */
+export type VerifyLoads = (loads: Loads) => void;
 
 /** The functions of `space` that write; shadowed for the duration of a render or screenshot. */
 const WRITING_FUNCTIONS = ["writePage", "deletePage", "writeFile", "deleteFile", "writeDocument", "deleteDocument"];
@@ -71,6 +143,7 @@ export function renderScript(page: string): string {
   return `${SHADOW}
 local name = ${luaString(page)}
 sbmcp_shadow()
+${LOADS_BEGIN}
 local ok, result = pcall(function()
   local text = space.readPage(name)
   local probeOk, probe = pcall(markdown.expandMarkdown, "\${_CTX.currentPage.name}", {pageName = name})
@@ -84,22 +157,35 @@ local ok, result = pcall(function()
   if not expandOk then error(md) end
   return {markdown = md, shim = true}
 end)
+local loads = ${LOADS_READ}
 sbmcp_restore()
 if not ok then error(result) end
+result.loads = loads
 return result`;
 }
 
-/** Shadows the writing functions and shows the page in the runtime's editor; the screenshot follows as a separate request. */
+/**
+ * Shadows the writing functions, starts the resource timing and shows the page in the runtime's
+ * editor; the loads are then read until they settle, and the screenshot follows as a separate request.
+ */
 export function navigateScript(page: string): string {
   return `${SHADOW}
 sbmcp_shadow()
+${LOADS_BEGIN}
 editor.navigate(${luaString(page)})
 return editor.getCurrentPage()`;
 }
 
+/** Shows the blank page, so that what the page shown before still loads lands outside the next capture. */
+export const PARK_SCRIPT = `editor.navigate(${luaString(BLANK_PAGE)})
+return editor.getCurrentPage()`;
 export const CURRENT_PAGE_SCRIPT = `return editor.getCurrentPage()`;
+/** The current page and what the client has loaded since the timing began. */
+export const LOADS_SCRIPT = `return {page = editor.getCurrentPage(), loads = ${LOADS_READ}}`;
+/** Restores the writing functions and parks the runtime on the blank page. */
 export const RESTORE_SCRIPT = `${SHADOW}
 sbmcp_restore()
+editor.navigate(${luaString(BLANK_PAGE)})
 return true`;
 
 /**
@@ -169,8 +255,9 @@ export type RenderOutcome = {
   runtime: RuntimeInfo;
 };
 
-export type RenderResult = RenderOutcome & { markdown: string; shim: boolean };
-export type ScreenshotResult = RenderOutcome & { png: Buffer; width: number; height: number };
+/** `loaded`: how many files of the space the render loaded, all of them readable by the caller (the render check). */
+export type RenderResult = RenderOutcome & { markdown: string; shim: boolean; loaded: number };
+export type ScreenshotResult = RenderOutcome & { png: Buffer; width: number; height: number; loaded: number };
 
 /** A runtime bound to one user, space and deadline. */
 type Handle = {
@@ -179,6 +266,11 @@ type Handle = {
 };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** The settle loop of a screenshot: polls every `SETTLE_STEP` ms until `SETTLE_POLLS` polls brought nothing new, at most `SETTLE_CAP` ms. */
+const SETTLE_STEP = 50;
+const SETTLE_POLLS = 3;
+const SETTLE_CAP = 1500;
 
 export class Renderer {
   private readonly d: RenderDeps;
@@ -190,27 +282,67 @@ export class Renderer {
     this.gate = new Semaphore(Math.max(1, d.config.renderParallel));
   }
 
-  render(user: Credential, space: string, page: string): Promise<RenderResult> {
+  /** Renders the page; `verify` sees what the expansion loaded and refuses by throwing, before the Markdown is returned. */
+  render(user: Credential, space: string, page: string, verify: VerifyLoads): Promise<RenderResult> {
     return this.onRuntime(user, space, async (rt) => {
-      const r = (await rt.lua(renderScript(page))) as { markdown?: unknown; shim?: unknown };
+      const r = (await rt.lua(renderScript(page))) as { markdown?: unknown; shim?: unknown; loads?: unknown };
       if (!r || typeof r.markdown !== "string") throw new Error("the render script returned no Markdown");
-      return { markdown: r.markdown, shim: r.shim === true };
+      const loads = parseLoads(r.loads, space);
+      verify(loads);
+      return { markdown: r.markdown, shim: r.shim === true, loaded: loads.files.length };
     });
   }
 
-  screenshot(user: Credential, space: string, page: string, opts: { selector?: string; fullPage?: boolean }): Promise<ScreenshotResult> {
+  /**
+   * Shows the page and captures it; `verify` sees what the client loaded once the loads settled,
+   * before the capture, and once more after it, and refuses by throwing. The runtime is parked on
+   * the blank page before (when it shows anything else) and after, so that fetches of the page
+   * shown before land outside the capture window.
+   */
+  screenshot(user: Credential, space: string, page: string, opts: { selector?: string; fullPage?: boolean }, verify: VerifyLoads): Promise<ScreenshotResult> {
     return this.onRuntime(user, space, async (rt) => {
       try {
-        const current = await rt.lua(navigateScript(page));
-        // navigate returns once the page is shown; a short confirmation loop covers a slow switch.
-        for (let i = 0; i < 20 && current !== page && (await rt.lua(CURRENT_PAGE_SCRIPT)) !== page; i++) await sleep(100);
+        if ((await rt.lua(CURRENT_PAGE_SCRIPT)) !== BLANK_PAGE) {
+          await rt.lua(PARK_SCRIPT);
+          await this.settle(rt, space, BLANK_PAGE);
+        }
+        await rt.lua(navigateScript(page));
+        const loads = await this.settle(rt, space, page);
+        verify(loads);
         const png = await rt.screenshot(opts);
         const { width, height } = pngSize(png);
-        return { png, width, height };
+        // What landed between the check and the capture is judged too.
+        const after = await this.loads(rt, space);
+        verify(after.loads);
+        return { png, width, height, loaded: after.loads.files.length };
       } finally {
         await rt.lua(RESTORE_SCRIPT).catch(() => {});
       }
     });
+  }
+
+  private async loads(rt: Handle, space: string): Promise<{ page: unknown; loads: Loads }> {
+    const r = (await rt.lua(LOADS_SCRIPT)) as { page?: unknown; loads?: unknown } | null;
+    return { page: r?.page, loads: parseLoads(r?.loads, space) };
+  }
+
+  /**
+   * Polls the loads until the page is shown and no new entry arrived over `SETTLE_POLLS` polls
+   * (widgets load after `editor.navigate` returns; measured 55 ms for a transclusion), bounded by
+   * `SETTLE_CAP`. Returns the loads seen last.
+   */
+  private async settle(rt: Handle, space: string, page: string): Promise<Loads> {
+    const until = Date.now() + SETTLE_CAP;
+    let last = await this.loads(rt, space);
+    let stable = 0;
+    while (Date.now() < until) {
+      await sleep(SETTLE_STEP);
+      const now = await this.loads(rt, space);
+      stable = now.page === page && now.loads.entries === last.loads.entries ? stable + 1 : 0;
+      last = now;
+      if (stable >= SETTLE_POLLS) break;
+    }
+    return last.loads;
   }
 
   /**
@@ -255,7 +387,7 @@ export class Renderer {
         const { warnings, rebooted } = await this.ensureIndex(handle, rt, space);
         const indexWaitMs = Date.now() - t1;
         const out = await fn(handle);
-        log.info("render", { user: user.user, space, queuedMs, indexWaitMs, rebooted, ms: Date.now() - t0 });
+        log.info("render", { user: user.user, space, queuedMs, indexWaitMs, rebooted, loaded: (out as { loaded?: number }).loaded, ms: Date.now() - t0 });
         return { ...out, queuedMs, indexWaitMs, rebooted, warnings, runtime: rt };
       } finally {
         release();
