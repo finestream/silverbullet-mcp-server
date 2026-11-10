@@ -6,12 +6,15 @@
 # user-or-group: a user of the credentials file, or @group.
 # space: the space prefix (notes for /notes), or * for every space.
 # path: / for the whole space, an exact page name, or a folder ending in /.
-#       A page name may contain single spaces.
+#       A page name may contain single spaces. A folder covers the page of
+#       the same name too: Shared/ is the folder and the page Shared. For
+#       other rights on that page, add a line for the page: it wins there.
 # rights: letters of r (read, list, search), w (create, edit), d (delete),
 #         x (render, screenshot), or - for nothing.
 #
-# The most specific path wins; on the same path a user entry wins over group
-# entries; between groups - wins, otherwise rights add up.
+# The most specific path wins (an exact page, then the longest folder, then
+# /); on the same path a user entry wins over group entries; between groups
+# - wins, otherwise rights add up.
 
 @agents     notes   /               r
 @agents     notes   CONFIG          -

@@ -46,8 +46,10 @@ The server ships these conventions as [space-guidelines.md](space-guidelines.md)
 
 * Rights per user or group, space and path: `r` read, `w` create and edit, `d` delete, `x` render, `-` no access. The list restricts agents only: it is checked on the server's route and nowhere else; a person in SilverBullet's editor is bound by SilverBullet's own rights.
 * A path is the whole space (written `/`), an exact page, or a folder ending in `/`. A file that is not a page is matched by its file name (`Pictures/a.png`). The space is a prefix, or `*` for every space.
+* **A folder entry covers the page of the same name.** SilverBullet stores the page `Projects` as `Projects.md` beside the folder `Projects/`, not inside it, and shows the two as one node of its page tree; an entry for `Projects/` therefore applies to the page `Projects` as well. Nothing else beside the folder is covered: not `Projects.png`, not the page `Projects 2025`.
+* **An exact entry is the exception.** To give the page other rights than its folder, add an entry for the page: `Projects/ rw` with `Projects r` leaves the page read-only, `Projects/ -` with `Projects r` opens the page alone. An exact entry never reaches into the folder.
 * Deny by default: without an entry, nothing is allowed.
-* The most specific path wins; on the same path a user entry wins over group entries; between groups `-` wins, otherwise rights add up.
+* The most specific path wins: an exact entry for the page first, then the longest folder, then the whole space. On the same path a user entry wins over group entries; between groups `-` wins, otherwise rights add up. The path decides before the subject: a group's exact entry wins over a user's folder entry.
 * The list applies to every tool: a denied page is absent from listings and search results, and a listed file shows the effective rights (the list, within what SilverBullet grants), the same value a refusal reports, never SilverBullet's own permission for the user.
 * **`x` is not a Unix permission.** Unix checks every file a program opens against the user's rights, before it is opened. The access list is checked at the tool boundary, when a call arrives; a render (`x`) then runs inside SilverBullet with the user's full rights in that space. A `-` on `CONFIG` keeps `read-note` out of `CONFIG`; inside a render of a page that transcludes `CONFIG`, the page is read all the same. What the server does instead is check afterwards: the render check (section 12) reads from the runtime's browser which pages and files the render loaded, and returns nothing when one of them is denied to the user. The write filter and the scan keep literal transclusions of denied pages out of the pages they see (section 5), and the server warns when a list combines `x` with a denial in one space (section 11). None of this reaches SilverBullet's index: a query shows the rows it holds of a denied page. The closer analogy is a restricted shell that can start a program running with the user's full rights and refuses to show its output when it opened a file the shell would not: `x` means "may read everything SilverBullet lets this user read in that space, except that the result is withheld when it reached a denied page or file", and is granted with that in mind.
 * Groups are named on the user's line of the credentials file; a user may be in several.
@@ -66,7 +68,9 @@ writer-bot       notes    Shared/Bot/     rwdx
 writer-bot       notes    Shared/         rwx
 ```
 
-Here `writer-bot`, a member of `agents`, may render under `Shared/` because its own entry adds `x`, and may delete only in `Shared/Bot/`. The entry for `Shared/Bot/` is the most specific one and replaces the others there, which is why it repeats `x`.
+Here `writer-bot`, a member of `agents`, may render under `Shared/` because its own entry adds `x`, and may delete only in `Shared/Bot/`. The entry for `Shared/Bot/` is the most specific one and replaces the others there, which is why it repeats `x`. The same entries decide for the pages `Shared` and `Shared/Bot`, and the page `Library` is denied with its folder; a line `@agents notes Shared r` would make the page `Shared` read-only for the group and leave the folder as it is.
+
+Before version 0.6.0 a folder entry did not cover the page of its name, and a list needed two lines for the two. Such a pair with equal rights still means the same; the exact line can go. A list that relied on the page staying outside its folder's entry needs an exact entry for the page now.
 
 ## 5. The write filter
 

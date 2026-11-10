@@ -145,8 +145,8 @@ SilverBullet grants rights per space. The server passes SilverBullet's refusals 
 | `x` | render and screenshot |
 | `-` | nothing: an explicit denial |
 
-* **Paths** are the whole space, an exact page, or a folder ending in `/`.
-* **Deny by default; the most specific path wins.** A rule for `Projects/` and a narrower one for `Projects/Private/` combine as expected. On the same path a user entry wins over group entries; between groups `-` wins, otherwise rights add up.
+* **Paths** are the whole space, an exact page, or a folder ending in `/`. A folder entry covers the page of the same name too (`Projects/` is also the page `Projects`, which SilverBullet stores beside the folder); an exact entry for that page is the exception.
+* **Deny by default; the most specific path wins:** an exact page, then the longest folder, then the whole space. A rule for `Projects/` and a narrower one for `Projects/Private/` combine as expected. On the same path a user entry wins over group entries; between groups `-` wins, otherwise rights add up.
 * **Groups** are named on the user's line of the credentials file; a user may be in several. The shipped default is a group `agents` with `r` on the space, `-` on `CONFIG`, `SETTINGS` and `Library/`, and write rights only where the operator grants them ([security.md](security.md), section 4).
 * **Applied to every tool**, listings and search included: a page the user may not read is absent from `list-notes` and `search-notes` results, not only refused on `read-note`.
 * **Why the server may restrict at all:** a server-side restriction is only worth something if the client cannot go around it. Because the client never holds a SilverBullet token (section 2), the MCP server is its only route, and the list holds. SilverBullet stays the ceiling, so the list never hides what SilverBullet itself enforces.

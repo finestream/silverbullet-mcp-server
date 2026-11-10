@@ -167,6 +167,34 @@ test("access: list-notes shows the effective rights, not SilverBullet's: `r` und
   }
 });
 
+test("access: a folder entry covers the page of the same name; an exact entry gives that page other rights", async () => {
+  // alice: `r` on the space; `rwd` on Covered/, which is the page Covered too; the page Covered/Locked is the exception with `r`, its folder keeps `rwd`.
+  const s = await startServer({ accessList: DEFAULT_ACCESS_LIST + "alice alpha Covered/ rwd\nalice alpha Covered/Locked r\n" });
+  const a = await connect(s.url, BEARERS.alice);
+  const created: Array<{ page: string; revision: string }> = [];
+  try {
+    for (const page of ["Covered", "Covered/Inner", "Covered/Locked/Inner"]) {
+      const r = await a.call("create-note", { filename: page, content: "temporary" });
+      assert.equal(r.isError, false, `${page}: ${r.text}`);
+      created.push({ page, revision: r.data!.revision });
+    }
+    const locked = await a.call("create-note", { filename: "Covered/Locked", content: "temporary" });
+    assert.equal(locked.isError, true);
+    assert.match(locked.text, /has no "w" on alpha\/Covered\/Locked \(effective rights: r\)/, "the exact entry wins over the folder entries for its page");
+    const beside = await a.call("create-note", { filename: "Covered too", content: "temporary" });
+    assert.match(beside.text, /has no "w" on alpha\/Covered too \(effective rights: r\)/, "a page that only starts with the folder's name is not covered");
+
+    const listed = await a.call("list-notes", { namePattern: "^Covered" });
+    assert.equal(listed.isError, false, listed.text);
+    const notes = listed.data!.notes as Array<{ name: string; rights: string }>;
+    assert.deepEqual(notes.map((n) => [n.name, n.rights]), [["Covered.md", "rwd"], ["Covered/Inner.md", "rwd"], ["Covered/Locked/Inner.md", "rwd"]]);
+  } finally {
+    for (const c of created) await a.call("delete-note", { filename: c.page, expectedRevision: c.revision });
+    await a.close();
+    await s.stop();
+  }
+});
+
 test("input: names with dot segments, control characters or backslashes, and malformed space names are refused before any call", async () => {
   for (const filename of ["../CONFIG", "Agent/../../CONFIG", ".hidden", "Agent/.git/x", "a\\b", "Agent//x", "x\u0000y"]) {
     const r = await alice.call("read-note", { filename });

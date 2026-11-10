@@ -112,7 +112,7 @@ Three files and a few variables. The files are re-read when they change; a `SIGH
 | File | Variable | What |
 |---|---|---|
 | credentials (a secret) | `MCP_CREDENTIALS_FILE`, default `/run/secrets/credentials` | One line per SilverBullet user: API token, default space, groups, bearer hashes and, optionally, the e-mail addresses for Cloudflare Access; the line of the technical user (`MCP_SCAN_USER`, default `scan`) ([example](config/credentials.example); [docs/security.md](docs/security.md), section 3) |
-| access list | `MCP_ACCESS_LIST_FILE`, default `$MCP_CONFIG_DIR/access-list` | What each user or group may do per space and path ([example](config/access-list.example); [docs/security.md](docs/security.md), section 4) |
+| access list | `MCP_ACCESS_LIST_FILE`, default `$MCP_CONFIG_DIR/access-list` | What each user or group may do per space and path; a folder line (`Shared/`) covers the page of the same name too, and a line for that page alone is the exception ([example](config/access-list.example); [docs/security.md](docs/security.md), section 4) |
 | allowlist | `MCP_ALLOWLIST_FILE`, default `$MCP_CONFIG_DIR/allowlist` | The functions a page may call ([shipped default](config/allowlist); [docs/security.md](docs/security.md), section 6) |
 | allowed files | `MCP_ALLOWED_FILES_FILE`, default `$MCP_CONFIG_DIR/allowed-files`, optional | Non-page files the scan may ignore ([example](config/allowed-files.example); [docs/security.md](docs/security.md), section 7) |
 

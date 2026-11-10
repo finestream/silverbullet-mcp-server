@@ -50,10 +50,38 @@ test("access: between groups on the same path `-` wins, otherwise rights add up"
 
 test("access: an exact page entry matches that page only; `*` matches every space", () => {
   assert.equal(rights("x", ["agents"], "notes", "CONFIG.md"), "-");
-  assert.equal(rights("x", ["agents"], "notes", "CONFIG/sub.md"), "r", "a folder with the same name is not the page");
+  assert.equal(rights("x", ["agents"], "notes", "CONFIG/sub.md"), "r", "an exact entry does not cover the folder of the same name");
   assert.equal(rights("x", ["readers"], "anything", "Public/P.md"), "r");
   assert.equal(rights("alice", [], "notes", "ZZ Agent internal/Claude code/Plan.md"), "rwd");
   assert.equal(rights("alice", [], "notes", "ZZ Agent internal/shared.md"), "-");
+});
+
+test("access: a folder entry covers the page of the same name; an exact entry is the exception", () => {
+  assert.equal(rights("other-bot", ["agents"], "notes", "Shared.md"), "rw", "Shared/ covers the page Shared");
+  assert.equal(rights("other-bot", ["agents"], "notes", "Library.md"), "-");
+  assert.equal(rights("writer-bot", ["agents"], "notes", "Shared/Bot.md"), "rwdx", "Shared/Bot/ is more specific than Shared/ for the page Shared/Bot");
+  assert.equal(rights("alice", [], "notes", "ZZ Agent internal/Claude code.md"), "rwd");
+  assert.equal(rights("other-bot", ["agents"], "notes", "Shared.png"), "r", "a file that is not the page is not covered");
+  assert.equal(rights("other-bot", ["agents"], "notes", "Sharedx.md"), "r");
+
+  const list = (text: string) => {
+    const a = compileAccessList(parseAccessList(text).entries);
+    return (user: string, groups: string[], file: string) => rightsText(a.rights(user, groups, "notes", file));
+  };
+  // the exception: the exact entry wins for the page, whatever the order and however long the folder path
+  const except = list("bot notes Area/ rwd\nbot notes Area r\nbot notes Area/Sub/ rw\nbot notes Area/Sub -\n");
+  assert.equal(except("bot", [], "Area.md"), "r");
+  assert.equal(except("bot", [], "Area/Page.md"), "rwd");
+  assert.equal(except("bot", [], "Area/Sub.md"), "-");
+  assert.equal(except("bot", [], "Area/Sub/Page.md"), "rw");
+  // the other way round: the page alone, the folder denied
+  const pageOnly = list("bot notes / r\nbot notes Area/ -\nbot notes Area r\n");
+  assert.equal(pageOnly("bot", [], "Area.md"), "r");
+  assert.equal(pageOnly("bot", [], "Area/Page.md"), "-");
+  // an exact group entry wins over a user's folder entry: the path decides before the subject
+  const mixed = list("bot notes Area/ rw\n@agents notes Area -\n");
+  assert.equal(mixed("bot", ["agents"], "Area.md"), "-");
+  assert.equal(mixed("bot", ["agents"], "Area/Page.md"), "rw");
 });
 
 test("access: non-page files are matched by their file name", () => {
@@ -93,6 +121,9 @@ test("access: a user with x on one path and no r on another is reported per spac
   // deny by default: x on a folder and no entry for the rest of the space
   const narrow = compileAccessList(parseAccessList("reader * Drafts/ rwx\n").entries);
   assert.deepEqual(rendersWithDenials(narrow, SUBJECTS), ["rendering beside a denial in every space: reader (x on Drafts/; no r on the rest of the space). A render shows what SilverBullet lets the user see: a page with x can show a page without r, by a transclusion or a query"]);
+  // an exception page under a folder with x is a denial like any other
+  const except = compileAccessList(parseAccessList("reader * Drafts/ rx\nreader * Drafts -\nreader * / r\n").entries);
+  assert.match(rendersWithDenials(except, SUBJECTS)[0], /reader \(x on Drafts\/; no r on Drafts\)/);
   // x everywhere and no denial: nothing to report
   const open = compileAccessList(parseAccessList("reader * / rx\n").entries);
   assert.deepEqual(rendersWithDenials(open, SUBJECTS), []);

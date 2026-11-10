@@ -1,7 +1,9 @@
 // The access list (docs/security.md, section 4): per user or group, space and
 // path, what an agent may do through this server. Deny by default; the most
 // specific path wins; on the same path a user entry wins over group entries;
-// between groups `-` wins, otherwise rights add up.
+// between groups `-` wins, otherwise rights add up. A folder entry `X/` covers
+// the page `X` too (SilverBullet stores it beside the folder); an entry for
+// the exact page is the exception and wins over every folder entry.
 
 export type Right = "r" | "w" | "d" | "x";
 export type Rights = Set<Right>;
@@ -11,7 +13,7 @@ export type AccessEntry = {
   subject: string;
   /** A space prefix, or `*` for every space. */
   space: string;
-  /** `/` for the whole space, an exact page name, or a folder ending in `/`. */
+  /** `/` for the whole space, an exact page name, or a folder ending in `/` (which covers the page of that name too). */
   path: string;
   /** The rights, empty for `-`. */
   rights: Rights;
@@ -71,16 +73,22 @@ export function pageNameOf(file: string): string {
   return file.endsWith(".md") ? file.slice(0, -3) : file;
 }
 
-/** Whether an entry's path covers a page name. */
+/** Whether a path (the whole space, an exact name, or a folder ending in `/`) covers a name. */
 export function pathMatches(entryPath: string, page: string): boolean {
   if (entryPath === "/") return true;
   if (entryPath.endsWith("/")) return page.startsWith(entryPath);
   return page === entryPath;
 }
 
-/** A longer path is more specific; the whole space is the least specific. */
+/** Whether an entry's path covers a page name: as `pathMatches`, and a folder `X/` covers the page `X`, stored as `X.md` beside it. */
+function entryMatches(entryPath: string, page: string): boolean {
+  return pathMatches(entryPath, page) || (entryPath !== "/" && entryPath === `${page}/`);
+}
+
+/** An exact entry is the most specific; among folders the longer path; the whole space is the least specific. */
 function specificity(entryPath: string): number {
-  return entryPath === "/" ? 0 : entryPath.length;
+  if (entryPath === "/") return 0;
+  return entryPath.endsWith("/") ? entryPath.length : Infinity;
 }
 
 export function compileAccessList(entries: AccessEntry[]): AccessList {
@@ -92,7 +100,7 @@ export function compileAccessList(entries: AccessEntry[]): AccessList {
     entries,
     rights(user, groups, space, file) {
       const page = pageNameOf(file);
-      const matching = applicable(user, groups, space).filter((e) => pathMatches(e.path, page));
+      const matching = applicable(user, groups, space).filter((e) => entryMatches(e.path, page));
       if (matching.length === 0) return NO_RIGHTS;
       const best = Math.max(...matching.map((e) => specificity(e.path)));
       const atBest = matching.filter((e) => specificity(e.path) === best);
