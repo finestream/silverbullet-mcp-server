@@ -38,6 +38,7 @@ The server ships strict: a deny-by-default access list, a write filter on every 
 | [`docs/cloudflare-access.md`](docs/cloudflare-access.md) | Cloudflare Access in front of the server: what the server verifies, what the Access application must do, the route, connecting a client |
 | [`docs/security.md`](docs/security.md) | Security model: threat model, access list, write filter, allowlist, scan, index-time transform, defaults |
 | [`docs/space-guidelines.md`](docs/space-guidelines.md) | Conventions a space follows when this server guards it |
+| [`docs/proposals.md`](docs/proposals.md) | Design, not yet built: tools with which an agent proposes a change to a page it may not write, and the library with which a person reviews and applies it |
 | [`docs/facts/`](docs/facts) | Measured behaviour of SilverBullet 2.12.1 that the security model rests on |
 | [`src/`](src) | The server: `main.ts` (entry, `--scan`, `--hash`), `server.ts` (HTTP, auth), `oauth.ts` and `cf-access.ts` (the two verifiers), `tools.ts` (the tools), `filter/` (the write filter on the vendored parser, the allowlist), `access.ts`, `credentials.ts`, `scan.ts`, `render.ts` (the render path over the Runtime API), `edit.ts`; unit tests beside the code |
 | [`config/`](config) | The shipped allowlist and examples of the credentials file, the access list and the allowed-files list |
