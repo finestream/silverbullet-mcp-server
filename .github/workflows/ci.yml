@@ -12,10 +12,10 @@ permissions:
 jobs:
   check:
     name: Lint, unit and integration tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -34,22 +34,25 @@ jobs:
         run: docker compose -f test/compose.yaml down -v
 
   image:
+    # A pull request builds the image without pushing it, so the steps of this
+    # job are tested before a release; only a tag logs in and pushes.
     name: Build and push the image
     needs: check
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/metadata-action@v5
+      - uses: docker/metadata-action@v6
         id: meta
         with:
           images: ghcr.io/${{ github.repository }}
@@ -57,10 +60,10 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64,linux/arm64

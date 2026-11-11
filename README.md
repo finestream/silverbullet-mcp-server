@@ -45,7 +45,7 @@ The server ships strict: a deny-by-default access list, a write filter on every 
 | [`test/`](test) | The release checks (a compose test instance, a bootstrap through the admin API, one check per assumption, a report per SilverBullet version) and, in `test/server/`, the server's integration tests against the same instance |
 | [`scripts/acceptance.ts`](scripts/acceptance.ts) | The acceptance test of a running server, from any machine that reaches it (*Acceptance test* below) |
 | [`Dockerfile`](Dockerfile), [`compose.example.yaml`](compose.example.yaml) | The image (`node:24-alpine`, non-root) and how to run it next to SilverBullet with secrets from files |
-| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | Lint, unit and integration tests on every pull request; the image to `ghcr.io/finestream/silverbullet-mcp` on a version tag |
+| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | Lint, unit and integration tests and a build of the image on every pull request; the image is pushed to `ghcr.io/finestream/silverbullet-mcp` on a version tag |
 
 ## Run
 
