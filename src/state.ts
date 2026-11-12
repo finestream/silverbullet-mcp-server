@@ -22,9 +22,6 @@ export type SpaceState = {
   lastScan: Date | null;
   scanMs: number;
   pagesChecked: number;
-  filesSeen: number;
-  /** Set when a write through the server removed findings after the last scan. */
-  findingsChangedSinceScan: boolean;
 };
 
 export type Check = { ok: boolean; problems: string[] };
@@ -90,8 +87,6 @@ export class State {
         lastScan: null,
         scanMs: 0,
         pagesChecked: 0,
-        filesSeen: 0,
-        findingsChangedSinceScan: false,
       };
       this.spaces.set(name, s);
     }
@@ -115,7 +110,6 @@ export class State {
     const now = Date.now();
     return (this.pendingWrites.get(space) ?? []).filter((w) => w.seq > confirmedSeq && now - w.at < PENDING_TTL);
   }
-
 
   /** The predefined refuse-to-serve error for the whole server, or null. */
   globalRefusal(): string | null {
@@ -169,9 +163,7 @@ export class State {
   dropFindings(space: string, page: string, deletedFile?: string) {
     const s = this.spaces.get(space);
     if (!s) return;
-    const before = s.findings.length + s.files.length;
     s.findings = s.findings.filter((f) => f.page !== page);
     if (deletedFile) s.files = s.files.filter((f) => f.file !== deletedFile);
-    if (s.findings.length + s.files.length !== before) s.findingsChangedSinceScan = true;
   }
 }

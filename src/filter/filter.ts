@@ -434,7 +434,7 @@ export function checkExpression(body: string, allow: Allowlist): Reason[] {
         checkChain(n, scope);
         return;
       case "Name":
-        if (isReference(n, src)) checkReference([text(n)], scope, false);
+        if (isReference(n)) checkReference([text(n)], scope, false);
         return;
       case "FunctionCall": {
         const callee = n.firstChild!;
@@ -518,7 +518,7 @@ function methodName(call: SyntaxNode, src: string): string | null {
 }
 
 /** A Name is a variable reference unless it is a member name, a key, a parameter or a label. */
-function isReference(n: SyntaxNode, src: string): boolean {
+function isReference(n: SyntaxNode): boolean {
   const p = n.parent;
   if (!p) return true;
   // lezer hands out a fresh SyntaxNode object per step, so compare positions, not identity.
@@ -526,7 +526,6 @@ function isReference(n: SyntaxNode, src: string): boolean {
   if (p.name === "Property" && prev) return false; // a.NAME
   if (p.name === "FunctionCall" && prev?.name === ":") return false; // a:NAME()
   if (p.name === "FieldProp") return prev !== null; // {NAME = value}, from NAME = source: the first Name is a key
-  void src;
   return !["AttName", "FuncName", "Label", "Goto", "ForNumeric", "NameList", "ArgList"].includes(p.name);
 }
 

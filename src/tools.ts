@@ -12,18 +12,16 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { AccessList, Right, Rights, Subject } from "./access.ts";
-import { renderersWithoutRead, rightsText } from "./access.ts";
+import { pageNameOf, renderersWithoutRead, rightsText } from "./access.ts";
 import type { Allowlist } from "./filter/allowlist.ts";
 import { describe, isCodePlace, TRANSCLUSION_RULE, type Verdict } from "./filter/filter.ts";
 import { checkPageLimited, CheckTimeout } from "./filter/check.ts";
-import { pageNameOf } from "./access.ts";
 import type { Credential } from "./credentials.ts";
 import { diffOf, prepareEdits } from "./edit.ts";
 import { RuntimeError, SbError, SilverBullet, type SbFile } from "./sb.ts";
 import type { State } from "./state.ts";
 import { judgeLoads, RenderTimeout, type Loads, type Renderer } from "./render.ts";
-import type { Config } from "./config.ts";
-import { NEVER_WRITTEN_TYPES } from "./config.ts";
+import { NEVER_WRITTEN_TYPES, type Config } from "./config.ts";
 import type { Log } from "./log.ts";
 import { matchAll, MatchTimeout, type MatchItem } from "./match.ts";
 
@@ -90,6 +88,9 @@ export class Cache {
 
 const result = (data: Record<string, unknown>, text: string): CallToolResult => ({ content: [{ type: "text", text }], structuredContent: data });
 const failure = (text: string): CallToolResult => ({ content: [{ type: "text", text }], isError: true });
+
+/** An unreachable SilverBullet did not refuse anything (status 0); every other status is its answer. */
+const sbFailure = (e: SbError): string => (e.status === 0 ? e.message : `SilverBullet refused: ${e.message}`);
 
 const TEXT_TYPES = /^(text\/|application\/(json|yaml|x-yaml|xml|javascript|toml))/;
 
@@ -249,6 +250,13 @@ export function registerTools(server: McpServer, ctx: Context) {
     throw new Refusal("write-filter", `Refused by the write filter: ${parts.join("; and ")}. Nothing was written. Pages outside CONFIG and Library/ are data: ${rules.join("; ")} (docs/security.md, section 5).`);
   };
 
+  /** After a write or delete through the server: the listing is stale, the page's findings go, and a render waits for the index to hold the change. */
+  const written = (space: string, file: string, deleted = false) => {
+    cache.invalidate(user.user, space);
+    state.dropFindings(space, pageNameOf(file), deleted ? file : undefined);
+    if (file.endsWith(".md")) state.recordWrite(space, pageNameOf(file));
+  };
+
   const readText = async (space: string, file: string) => {
     const r = await sb.read(token, space, file);
     return { text: r.body.toString("utf8"), etag: r.etag, contentType: r.contentType };
@@ -258,10 +266,7 @@ export function registerTools(server: McpServer, ctx: Context) {
   const tool = <A extends Record<string, unknown>>(name: string, fn: (args: A) => Promise<CallToolResult>, spaceOf: (a: A) => string | undefined = (a) => a.space as string | undefined) => {
     return async (args: A): Promise<CallToolResult> => {
       const t0 = performance.now();
-      let space: string | null = null;
-      try {
-        space = spaceOf(args) ?? user.defaultSpace;
-      } catch {}
+      const space = spaceOf(args) ?? user.defaultSpace;
       state.count(state.requests, name);
       state.usersSeen.add(user.user);
       if (space) state.spacesSeen.add(space);
@@ -278,7 +283,7 @@ export function registerTools(server: McpServer, ctx: Context) {
         }
         if (e instanceof SbError) {
           done(`silverbullet:${e.status}`);
-          return failure(`SilverBullet refused: ${e.message}`);
+          return failure(e.status === 0 ? `Error: ${e.message}` : sbFailure(e));
         }
         if (e instanceof RuntimeError) {
           done(`runtime:${e.status}`);
@@ -435,7 +440,7 @@ export function registerTools(server: McpServer, ctx: Context) {
           const r = await readText(s, file);
           notes.push({ filename: file, revision: r.etag, content: r.text.slice(0, contentLimit), truncated: r.text.length > contentLimit, totalCharacters: r.text.length });
         } catch (e) {
-          notes.push({ filename: file, error: e instanceof SbError ? `SilverBullet refused: ${e.message}` : (e as Error).message });
+          notes.push({ filename: file, error: e instanceof SbError ? sbFailure(e) : (e as Error).message });
         }
       }
       const text = notes.map((n) => (n.error ? `## ${n.filename}\nError: ${n.error}` : `## ${n.filename}\n${n.content}${n.truncated ? "\n[Truncated; use read-note to continue]" : ""}`)).join("\n\n---\n\n");
@@ -545,9 +550,7 @@ export function registerTools(server: McpServer, ctx: Context) {
         if (e instanceof SbError && e.status === 412 && !overwrite) throw new Refusal("revision", `${file} already exists in ${s}. Use edit-note, or overwrite=true.`);
         throw e;
       });
-      cache.invalidate(user.user, s);
-      state.dropFindings(s, pageNameOf(file));
-      if (file.endsWith(".md")) state.recordWrite(s, pageNameOf(file));
+      written(s, file);
       return result({ space: s, filename: file, revision: r.etag, overwrite }, `Created ${s}/${file} (revision ${r.etag})`);
     }),
   );
@@ -607,9 +610,7 @@ export function registerTools(server: McpServer, ctx: Context) {
           throw e;
         });
         revision = w.etag;
-        cache.invalidate(user.user, s);
-        state.dropFindings(s, pageNameOf(file));
-        if (file.endsWith(".md")) state.recordWrite(s, pageNameOf(file));
+        written(s, file);
       }
       const data = { space: s, filename: file, dryRun, changed, applied: !dryRun && changed, replacements: prepared.counts, previousRevision: original.etag, revision, diff, diffTruncated: truncated };
       return result(data, `${dryRun ? "Preview" : changed ? "Edited" : "Unchanged"}: ${s}/${file}${!dryRun && changed ? ` (revision ${revision})` : ""}\n${diff}${truncated ? "\n[Diff truncated]" : ""}`);
@@ -638,9 +639,7 @@ export function registerTools(server: McpServer, ctx: Context) {
         if (e instanceof SbError && e.status === 412) throw new Refusal("revision", `Revision conflict: ${file} is not at ${expectedRevision}. Read it again. Nothing was deleted.`);
         throw e;
       });
-      cache.invalidate(user.user, s);
-      state.dropFindings(s, pageNameOf(file), file);
-      if (file.endsWith(".md")) state.recordWrite(s, pageNameOf(file));
+      written(s, file, true);
       return result({ space: s, filename: file, deleted: true }, `Deleted ${s}/${file}`);
     }),
   );

@@ -90,10 +90,15 @@ export class Scanner {
     this.d = d;
   }
 
-  /** Every space prefix of the instance the scan user can see, from the `/.config` of any reachable space; or the configured list. */
-  async discover(token: string): Promise<string[]> {
+  /**
+   * The configured list; otherwise every space prefix of the instance the scan user can see, from
+   * the `/.config` of any reachable space. Without a token: the default spaces of the credentials
+   * file and the spaces seen before, so that each is reported as unguarded.
+   */
+  async discover(token: string | null): Promise<string[]> {
     if (this.d.config.spaces.length) return [...this.d.config.spaces].sort();
     const known = new Set<string>([...this.d.seedSpaces(), ...this.d.state.spaces.keys()]);
+    if (!token) return [...known].sort();
     for (const space of [...known]) {
       try {
         const cfg = await this.d.sb.config(token, space);
@@ -113,8 +118,7 @@ export class Scanner {
     const summary: ScanSummary = { spaces: [], findings: 0, files: 0, unguarded: [], missingTransform: [], ms: 0 };
     try {
       const token = this.d.scanToken();
-      const spaces = token ? await this.discover(token) : this.d.config.spaces.length ? this.d.config.spaces : [...new Set([...this.d.seedSpaces(), ...state.spaces.keys()])];
-      for (const space of spaces) {
+      for (const space of await this.discover(token)) {
         const s = state.space(space);
         summary.spaces.push(space);
         if (!token) {
@@ -229,9 +233,6 @@ export class Scanner {
     s.lastScan = new Date();
     s.scanMs = Math.round(performance.now() - t0);
     s.pagesChecked = pagesChecked;
-    s.filesSeen = files.length;
-    s.findingsChangedSinceScan = false;
-    void sb;
     await this.writeReport(space, token, s, files);
   }
 

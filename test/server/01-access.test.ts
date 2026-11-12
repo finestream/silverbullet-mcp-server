@@ -5,7 +5,7 @@
 
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
-import { startServer, connect, BEARERS, DEFAULT_ACCESS_LIST, type RunningServer, type McpClient } from "./harness.ts";
+import { startServer, connect, credentialsFile, BEARERS, DEFAULT_ACCESS_LIST, type RunningServer, type McpClient } from "./harness.ts";
 
 let server: RunningServer;
 let alice: McpClient;
@@ -92,11 +92,10 @@ test("access: the most specific path wins; a user entry beats group entries; bet
   assert.equal(write.isError, true);
   assert.match(write.text, /^SilverBullet refused: .*403/, "the access list grants w, SilverBullet is the ceiling: its 403 is passed through");
 
-  const s = await startServer({ credentials: undefined, accessList: DEFAULT_ACCESS_LIST + "@ops * Projects/ -\n@readers * Projects/Two r\n" });
+  // alice in agents and ops: `-` from ops wins on Projects/.
+  const s = await startServer({ accessList: DEFAULT_ACCESS_LIST + "@ops * Projects/ -\n", credentials: credentialsFile({ groups: { alice: "agents,ops" } }) });
   try {
-    // alice in agents and ops: `-` from ops wins on Projects/.
-    const s2 = await startServer({ accessList: DEFAULT_ACCESS_LIST + "@ops * Projects/ -\n", credentials: credentialsWithGroups({ alice: "agents,ops" }) });
-    const a = await connect(s2.url, BEARERS.alice);
+    const a = await connect(s.url, BEARERS.alice);
     try {
       const r = await a.call("read-note", { filename: "Projects/One" });
       assert.equal(r.isError, true);
@@ -105,7 +104,6 @@ test("access: the most specific path wins; a user entry beats group entries; bet
       assert.equal(listed.data!.total, 0, "denied pages are absent from listings");
     } finally {
       await a.close();
-      await s2.stop();
     }
   } finally {
     await s.stop();
@@ -232,8 +230,3 @@ test("log: every tool call is one request line with user, space, tool and outcom
   assert.ok(typeof last.ms === "number");
   assert.ok(!server.logs.some((l) => l.includes(BEARERS.alice)), "no bearer in the log");
 });
-
-import { credentialsFile } from "./harness.ts";
-function credentialsWithGroups(groups: Record<string, string>) {
-  return credentialsFile({ groups });
-}

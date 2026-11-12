@@ -4,7 +4,7 @@ Can the server reject a page that carries code it should not carry, using Silver
 
 ## 1. Can SilverBullet's Lua parser be imported?
 
-**Answer.** Not from the npm package; yes by copying four files. The parser is a lezer grammar (`client/space_lua/lua.grammar`, based on R167/lezer-lua) compiled to `parse-lua.js` (19 KB) with `parse-lua.terms.js` and an external comment tokenizer `lua_comment.js`. Runtime dependencies: `@lezer/lr` and `@lezer/common` only. Copied unchanged into `src/filter/vendor/silverbullet/` with SilverBullet's `LICENSE.md` (MIT); the attribution is in that directory's README and in the repository's.
+**Answer.** Not from the npm package; yes by copying four files. The parser is a lezer grammar (`client/space_lua/lua.grammar`, based on R167/lezer-lua) compiled to `parse-lua.js` (19 KB) with `parse-lua.terms.js` and an external comment tokenizer `lua_comment.js`. Runtime dependencies: `@lezer/lr` and `@lezer/common` only. Copied unchanged into `src/filter/vendor/silverbullet/` with SilverBullet's `LICENSE.md` (MIT); the attribution is in [`src/filter/README.md`](../../src/filter/README.md) and in the repository's README.
 
 Evidence:
 

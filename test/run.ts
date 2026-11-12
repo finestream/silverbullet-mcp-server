@@ -14,7 +14,7 @@ import { readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, basename } from "node:path";
 import { bootstrap } from "./lib/bootstrap.ts";
-import { DEFAULT_URL, REPORT_DIR, STATE_DIR, loadEnv } from "./lib/env.ts";
+import { DEFAULT_URL, REPORT_DIR, loadEnv } from "./lib/env.ts";
 
 const url = process.env.SB_URL ?? loadEnv().SB_URL ?? DEFAULT_URL;
 const reachable = await fetch(`${url}/.dashboard/api/admin/spaces`).then((r) => r.status === 401 || r.status === 200, () => false);
@@ -89,5 +89,4 @@ if (measurements.length) {
 }
 writeFileSync(reportFile, lines.join("\n"));
 console.log(`\nreport: ${reportFile}  (${counts.pass} passed, ${counts.fail} failed, ${counts.changed} changed, ${counts.skip} skipped)`);
-void STATE_DIR;
 process.exit(counts.fail + counts.changed > 0 ? 1 : 0);

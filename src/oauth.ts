@@ -5,7 +5,8 @@
 // The server runs no authorization server of its own and never forwards a
 // token: a verified token only selects the user's line in the credentials file.
 
-import { createRemoteJWKSet, jwtVerify, errors, type JWTPayload, type JWTVerifyGetKey } from "jose";
+import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
+import { CLOCK_TOLERANCE, isSecureOrLoopback, rejectionOf } from "./jwt.ts";
 
 export type OAuthConfig = {
   /** The issuer identifier of the authorization server, as its tokens carry it in `iss`. */
@@ -23,8 +24,6 @@ export type OAuthConfig = {
 /** Signature algorithms accepted: asymmetric only. `none` and the HMAC family can never verify a token here. */
 export const ALGORITHMS = ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"];
 
-/** Seconds of clock difference tolerated between the issuer and this server. */
-const CLOCK_TOLERANCE = 30;
 const METADATA_TIMEOUT = 10_000;
 /** After a failed look-up of the issuer's metadata, how long until the next try. */
 const METADATA_RETRY = 30_000;
@@ -47,8 +46,7 @@ export function loadOAuthConfig(env: NodeJS.ProcessEnv): OAuthConfig | null {
     } catch {
       throw new Error(`${name} is not a URL: ${value}`);
     }
-    const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
-    if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) throw new Error(`${name} must be an https URL (http only for a loopback address): ${value}`);
+    if (!isSecureOrLoopback(url)) throw new Error(`${name} must be an https URL (http only for a loopback address): ${value}`);
     if (url.hash || url.username || url.password) throw new Error(`${name} must have no fragment and no credentials: ${value}`);
     if (name !== "MCP_OAUTH_JWKS_URL" && url.search) throw new Error(`${name} must have no query: ${value}`);
   }
@@ -148,10 +146,7 @@ export class OAuthVerifier {
       });
       claims = verified.payload;
     } catch (e) {
-      if (e instanceof errors.JWTExpired) return reject("the token has expired");
-      if (e instanceof errors.JWTClaimValidationFailed) return reject(`claim "${e.claim}": ${e.reason} (${e.message})`);
-      if (e instanceof errors.JOSEError) return reject(`${e.code}: ${e.message}`);
-      return reject((e as Error).message);
+      return reject(rejectionOf(e, "the token has expired"));
     }
     const granted = typeof claims.scope === "string" ? claims.scope.split(" ") : [];
     const missing = this.config.scopes.filter((s) => !granted.includes(s));

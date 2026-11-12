@@ -252,7 +252,6 @@ export type RenderOutcome = {
   indexWaitMs: number;
   rebooted: boolean;
   warnings: string[];
-  runtime: RuntimeInfo;
 };
 
 /** `loaded`: how many files of the space the render loaded, all of them readable by the caller (the render check). */
@@ -279,6 +278,7 @@ export class Renderer {
 
   constructor(d: RenderDeps) {
     this.d = d;
+    // The configuration already refuses less than 1; a cap of 0 would never grant.
     this.gate = new Semaphore(Math.max(1, d.config.renderParallel));
   }
 
@@ -388,7 +388,7 @@ export class Renderer {
         const indexWaitMs = Date.now() - t1;
         const out = await fn(handle);
         log.info("render", { user: user.user, space, queuedMs, indexWaitMs, rebooted, loaded: (out as { loaded?: number }).loaded, ms: Date.now() - t0 });
-        return { ...out, queuedMs, indexWaitMs, rebooted, warnings, runtime: rt };
+        return { ...out, queuedMs, indexWaitMs, rebooted, warnings };
       } finally {
         release();
       }

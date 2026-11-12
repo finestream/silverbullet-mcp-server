@@ -1,12 +1,10 @@
-// Lua snippets the checks send to the Runtime API.
+// Lua snippets the checks send to the Runtime API. The render script here is
+// the spike's, kept apart from the server's (src/render.ts) on purpose: the
+// checks assert SilverBullet's behaviour, not the server's.
 
-/** A Lua long-bracket string literal that cannot be closed by its content. */
-export function luaString(s: string): string {
-  let level = 0;
-  while (s.includes("]" + "=".repeat(level) + "]")) level++;
-  const eq = "=".repeat(level);
-  return `[${eq}[\n${s}]${eq}]`; // a leading newline is dropped by Lua
-}
+import { luaString } from "../../src/render.ts";
+
+export { luaString };
 
 /**
  * The render script of the design: expand `${…}`, queries, templates and

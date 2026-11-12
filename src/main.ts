@@ -172,7 +172,20 @@ async function scanOnce(config: Config) {
   const refusal = state.globalRefusal();
   if (refusal) lines.push(refusal);
   console.error(lines.join("\n"));
-  process.exit(refusal || !state.credentials.ok ? 2 : summary.findings + summary.files + summary.unguarded.length + summary.missingTransform.length > 0 ? 1 : 0);
+  // 2: the server could not serve at all; 1: the scan found something; 0: clean.
+  if (refusal || !state.credentials.ok) process.exit(2);
+  const found = summary.findings + summary.files + summary.unguarded.length + summary.missingTransform.length;
+  process.exit(found > 0 ? 1 : 0);
+}
+
+/** The configuration, or exit 2 with the one line that says what is wrong: a misconfigured server does not start. */
+function configOrExit(): Config {
+  try {
+    return loadConfig();
+  } catch (e) {
+    console.error(`Not started: ${(e as Error).message}`);
+    process.exit(2);
+  }
 }
 
 const mode = process.argv[2];
@@ -180,9 +193,9 @@ if (mode === "--hash") {
   const secret = readFileSync(0, "utf8").replace(/\r?\n$/, "");
   process.stdout.write(sha256hex(secret) + "\n");
 } else if (mode === "--scan") {
-  await scanOnce(loadConfig());
+  await scanOnce(configOrExit());
 } else if (mode === undefined) {
-  await serve(loadConfig());
+  await serve(configOrExit());
 } else {
   console.error(`usage: node src/main.ts [--scan | --hash]`);
   process.exit(2);

@@ -27,7 +27,7 @@ The server ships strict: a deny-by-default access list, a write filter on every 
 
 ## Status
 
-**Core server and rendering, phases 1a and 1b.** The server in `src/` serves the ten tools below as the authenticated user, with the credentials file, the access list, the write filter, the scan with its report page, the refusal to serve, and the two render tools over SilverBullet's Runtime API. Phase 1c adds the deployment material: the client guide and the acceptance test below. Phase 2 adds OAuth: the server verifies access tokens of an external identity provider as a resource server ([docs/oauth.md](docs/oauth.md)); built and tested against a test issuer, not yet run against a real identity provider. Beside it, the server accepts requests that came through Cloudflare Access, by verifying the assertion Access adds ([docs/cloudflare-access.md](docs/cloudflare-access.md)); built and tested against a test team domain. The architecture and the security model are in `docs/`; the *release checks* in `test/` assert, per SilverBullet release, the behaviour the design relies on.
+The server in `src/` serves the ten tools below as the authenticated user, with the credentials file, the access list, the write filter (in a worker thread with a time limit, transclusion rule included), the scan with its report page, the refusal to serve, and the two render tools over SilverBullet's Runtime API with the render check. The client guide and the acceptance test below are the deployment material. Authentication is by static bearer, by OAuth access token of an external identity provider ([docs/oauth.md](docs/oauth.md); built and tested against a test issuer, not yet run against a real identity provider), or by the assertion Cloudflare Access adds to a request it let through ([docs/cloudflare-access.md](docs/cloudflare-access.md); built and tested against a test team domain). Tools with which an agent proposes a change to a page it may not write are designed, not built ([docs/proposals.md](docs/proposals.md)). The architecture and the security model are in `docs/`; the *release checks* in `test/` assert, per SilverBullet release, the behaviour the design relies on.
 
 ## What is here
 
@@ -40,7 +40,7 @@ The server ships strict: a deny-by-default access list, a write filter on every 
 | [`docs/space-guidelines.md`](docs/space-guidelines.md) | Conventions a space follows when this server guards it |
 | [`docs/proposals.md`](docs/proposals.md) | Design, not yet built: tools with which an agent proposes a change to a page it may not write, and the library with which a person reviews and applies it |
 | [`docs/facts/`](docs/facts) | Measured behaviour of SilverBullet 2.12.1 that the security model rests on |
-| [`src/`](src) | The server: `main.ts` (entry, `--scan`, `--hash`), `server.ts` (HTTP, auth), `oauth.ts` and `cf-access.ts` (the two verifiers), `tools.ts` (the tools), `filter/` (the write filter on the vendored parser, the allowlist), `access.ts`, `credentials.ts`, `scan.ts`, `render.ts` (the render path over the Runtime API), `edit.ts`; unit tests beside the code |
+| [`src/`](src) | The server: `main.ts` (entry, `--scan`, `--hash`), `config.ts` (the environment, the watched configuration files), `server.ts` (HTTP, auth), `oauth.ts` and `cf-access.ts` (the two verifiers, sharing `jwt.ts`), `tools.ts` (the tools), `sb.ts` (SilverBullet's file, configuration and Runtime APIs), `filter/` (the write filter on the vendored parser, its worker, the allowlist), `access.ts`, `credentials.ts`, `scan.ts` (the scan and the report page), `state.ts` (the refuse-to-serve and render-block state), `render.ts` (the render path over the Runtime API, the render check), `edit.ts`, `match.ts` (user regexes in a worker), `log.ts`; unit tests beside the code |
 | [`config/`](config) | The shipped allowlist and examples of the credentials file, the access list and the allowed-files list |
 | [`test/`](test) | The release checks (a compose test instance, a bootstrap through the admin API, one check per assumption, a report per SilverBullet version) and, in `test/server/`, the server's integration tests against the same instance |
 | [`scripts/acceptance.ts`](scripts/acceptance.ts) | The acceptance test of a running server, from any machine that reaches it (*Acceptance test* below) |
@@ -108,7 +108,7 @@ MCP_URL=https://mcp.example.org/mcp MCP_BEARER=… MCP_RAW_PAGE="A page with que
 
 ## Configuration
 
-Three files and a few variables. The files are re-read when they change; a `SIGHUP` re-reads them and runs a scan.
+Four files, the last optional, and a few variables. The files are re-read when they change; a `SIGHUP` re-reads them and runs a scan.
 
 | File | Variable | What |
 |---|---|---|
@@ -137,7 +137,7 @@ Three files and a few variables. The files are re-read when they change; a `SIGH
 | `MCP_OAUTH_JWKS_URL`, `MCP_OAUTH_USER_CLAIM`, `MCP_OAUTH_SCOPES` | from the issuer; `preferred_username`; none | Where the issuer's keys are, which claim names the user, which scopes a token must carry |
 | `MCP_CF_ACCESS_TEAM_DOMAIN`, `MCP_CF_ACCESS_AUD` | none | Both set: a request that came through Cloudflare Access is authenticated by the assertion Access adds, verified against that team domain and that application's AUD tag ([docs/cloudflare-access.md](docs/cloudflare-access.md)) |
 
-A setting weaker than the shipped default is accepted and reported once ([docs/space-guidelines.md](docs/space-guidelines.md), *Defaults and overrides*).
+`PORT`, `MCP_RATE_LIMIT` and `MCP_RENDER_PARALLEL` must be whole numbers (`MCP_RENDER_PARALLEL` at least 1), and the durations a number with `ms`, `s`, `m`, `h` or `d` (plain seconds without a unit), at most 24 days; on anything else the server does not start and names the variable. A variable that is empty counts as unset and gets its default, as compose passes an unset `${VAR}`. A setting weaker than the shipped default is accepted and reported once ([docs/space-guidelines.md](docs/space-guidelines.md), *Defaults and overrides*).
 
 ## Tools
 

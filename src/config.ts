@@ -1,6 +1,7 @@
 // Configuration from the environment (README, "Configuration"): where
-// SilverBullet is, the three configuration files, the file types, the scan
-// settings and the name of the scan's technical user. Secrets are files (the credentials file); nothing secret is read
+// SilverBullet is, the four configuration files, the file types, the scan and
+// render settings, the name of the scan's technical user, OAuth and Cloudflare
+// Access. Secrets are files (the credentials file); nothing secret is read
 // from a variable.
 
 import { readFileSync, statSync, watchFile, unwatchFile } from "node:fs";
@@ -54,25 +55,30 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const dir = env.MCP_CONFIG_DIR ?? "/etc/silverbullet-mcp";
   return {
     sbUrl: (env.SB_URL ?? "http://silverbullet:3000").replace(/\/+$/, ""),
-    port: Number(env.PORT ?? 4000),
+    port: parseCount("PORT", set(env.PORT) ?? "4000", 0, 65535),
     credentialsFile: env.MCP_CREDENTIALS_FILE ?? "/run/secrets/credentials",
     accessListFile: env.MCP_ACCESS_LIST_FILE ?? `${dir}/access-list`,
     allowlistFile: env.MCP_ALLOWLIST_FILE ?? `${dir}/allowlist`,
     allowedFilesFile: env.MCP_ALLOWED_FILES_FILE ?? `${dir}/allowed-files`,
     fileTypes: parseFileTypes(env.MCP_FILE_TYPES ?? DEFAULT_FILE_TYPES.join(",")),
-    scanInterval: parseDuration(env.MCP_SCAN_INTERVAL ?? "15m"),
+    scanInterval: parseDuration("MCP_SCAN_INTERVAL", set(env.MCP_SCAN_INTERVAL) ?? "15m"),
     scanMode: env.MCP_SCAN_MODE === "quarantine" ? "quarantine" : "report",
     reportPage: env.MCP_REPORT_PAGE ?? "MCP Server",
     scanUser: env.MCP_SCAN_USER?.trim() || DEFAULT_SCAN_USER,
     spaces: (env.MCP_SPACES ?? "").split(",").map((s) => s.trim().replace(/^\//, "")).filter(Boolean),
-    rateLimit: Number(env.MCP_RATE_LIMIT ?? 120),
+    rateLimit: parseCount("MCP_RATE_LIMIT", set(env.MCP_RATE_LIMIT) ?? "120", 0),
     logLevel: env.MCP_LOG_LEVEL === "debug" ? "debug" : "info",
-    renderParallel: Number(env.MCP_RENDER_PARALLEL ?? 4),
-    renderTimeout: parseDuration(env.MCP_RENDER_TIMEOUT ?? "90s"),
-    indexWait: parseDuration(env.MCP_INDEX_WAIT ?? "5s"),
+    renderParallel: parseCount("MCP_RENDER_PARALLEL", set(env.MCP_RENDER_PARALLEL) ?? "4", 1),
+    renderTimeout: parseDuration("MCP_RENDER_TIMEOUT", set(env.MCP_RENDER_TIMEOUT) ?? "90s"),
+    indexWait: parseDuration("MCP_INDEX_WAIT", set(env.MCP_INDEX_WAIT) ?? "5s"),
     oauth: loadOAuthConfig(env),
     cfAccess: loadCfAccessConfig(env),
   };
+}
+
+/** The value, or undefined when it is unset or blank: compose passes an unset `${VAR}` as an empty string, which means the default. */
+function set(value: string | undefined): string | undefined {
+  return value?.trim() ? value : undefined;
 }
 
 export function parseFileTypes(text: string): string[] {
@@ -93,12 +99,29 @@ export function validateFileTypes(types: readonly string[]): string[] {
   return problems;
 }
 
-/** `0`, `30s`, `15m`, `2h`, `1d`, or plain seconds. */
-export function parseDuration(text: string): number {
+/**
+ * A whole number from `min` to `max`; throws, naming the variable, on anything else, so that a
+ * misconfigured server does not start (`Number("4o")` would be NaN: the render cap would then
+ * never grant and the rate limit never trigger).
+ */
+export function parseCount(name: string, text: string, min: number, max = Number.MAX_SAFE_INTEGER): number {
+  const n = /^\d+$/.test(text.trim()) ? Number(text.trim()) : NaN;
+  if (!(n >= min && n <= max)) throw new Error(`${name} must be a whole number ${max === Number.MAX_SAFE_INTEGER ? `of at least ${min}` : `from ${min} to ${max}`}, not "${text}"`);
+  return n;
+}
+
+/** The longest delay a Node.js timer keeps (about 24.8 days); a longer one fires after 1 ms. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * Milliseconds from `0`, `500ms`, `30s`, `15m`, `2h`, `1d`, or plain seconds, at most what a timer
+ * keeps; throws, naming the variable, on anything else.
+ */
+export function parseDuration(name: string, text: string): number {
   const m = text.trim().match(/^(\d+)\s*(ms|s|m|h|d)?$/);
-  if (!m) throw new Error(`not a duration: "${text}" (use 0, 30s, 15m, 2h or 1d)`);
-  const n = Number(m[1]);
-  return n * ({ ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2] ?? "s"] as number);
+  const ms = m ? Number(m[1]) * ({ ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2] ?? "s"] as number) : NaN;
+  if (!(ms <= MAX_TIMER_MS)) throw new Error(`${name} must be a duration of at most 24 days, such as 0, 500ms, 30s, 15m, 2h or 1d, not "${text}"`);
+  return ms;
 }
 
 /**

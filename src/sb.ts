@@ -21,8 +21,8 @@ export class SbError extends Error {
   readonly path: string | null;
   readonly body: string;
 
-  constructor(status: number, space: string, path: string | null, body: string) {
-    super(SbError.describe(status, space, path, body));
+  constructor(status: number, space: string, path: string | null, body: string, options?: ErrorOptions) {
+    super(SbError.describe(status, space, path, body), options);
     this.name = "SbError";
     this.status = status;
     this.space = space;
@@ -34,6 +34,8 @@ export class SbError extends Error {
     const where = path ? `${space}/${path}` : `space ${space}`;
     const text = body.trim().slice(0, 200);
     switch (status) {
+      case 0:
+        return `cannot reach SilverBullet for ${where}`;
       case 401:
         return `SilverBullet refused the user's token (401) for ${where}`;
       case 403:
@@ -108,7 +110,7 @@ export class SilverBullet {
     try {
       r = await fetch(url, { ...init, headers: this.headers(token, init.headers) });
     } catch (e) {
-      throw new SbError(0, space, path, "cannot reach SilverBullet");
+      throw new SbError(0, space, path, "", { cause: e });
     }
     if (!r.ok) throw new SbError(r.status, space, path, await r.text());
     return r;

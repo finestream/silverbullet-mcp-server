@@ -6,7 +6,8 @@
 // e-mail address Access signed in. The address only selects the user's line in
 // the credentials file; nothing of the assertion is forwarded.
 
-import { createRemoteJWKSet, jwtVerify, errors, type JWTPayload, type JWTVerifyGetKey } from "jose";
+import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
+import { CLOCK_TOLERANCE, isSecureOrLoopback, rejectionOf } from "./jwt.ts";
 
 export type CfAccessConfig = {
   /** The team domain as a URL without a path, `https://<team>.cloudflareaccess.com`: what an assertion carries in `iss`. */
@@ -24,9 +25,6 @@ const CERTS_PATH = "/cdn-cgi/access/certs";
 /** Access signs with RS256 and nothing else. */
 const ALGORITHMS = ["RS256"];
 
-/** Seconds of clock difference tolerated between Access and this server. */
-const CLOCK_TOLERANCE = 30;
-
 export type AccessVerified = { ok: true; email: string; claims: JWTPayload };
 export type AccessRejected = { ok: false; reason: string };
 
@@ -42,8 +40,7 @@ export function loadCfAccessConfig(env: NodeJS.ProcessEnv): CfAccessConfig | nul
   } catch {
     throw new Error(`MCP_CF_ACCESS_TEAM_DOMAIN is not a host name or URL: ${team}`);
   }
-  const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) throw new Error(`MCP_CF_ACCESS_TEAM_DOMAIN must be an https URL (http only for a loopback address): ${team}`);
+  if (!isSecureOrLoopback(url)) throw new Error(`MCP_CF_ACCESS_TEAM_DOMAIN must be an https URL (http only for a loopback address): ${team}`);
   if (url.pathname !== "/" || url.search || url.hash || url.username || url.password) throw new Error(`MCP_CF_ACCESS_TEAM_DOMAIN must be the team domain alone, without path, query, fragment or credentials: ${team}`);
   if (!/^[A-Za-z0-9_-]+$/.test(audience)) throw new Error("MCP_CF_ACCESS_AUD must be the application's AUD tag (letters, digits, - and _)");
   return { issuer: url.origin, audience };
@@ -78,10 +75,7 @@ export class CfAccessVerifier {
       });
       claims = verified.payload;
     } catch (e) {
-      if (e instanceof errors.JWTExpired) return reject("expired");
-      if (e instanceof errors.JWTClaimValidationFailed) return reject(`claim "${e.claim}": ${e.reason} (${e.message})`);
-      if (e instanceof errors.JOSEError) return reject(`${e.code}: ${e.message}`);
-      return reject((e as Error).message);
+      return reject(rejectionOf(e, "expired"));
     }
     const email = claims.email;
     // A service token is a client, not a person: its assertion names a `common_name` and no e-mail, so it selects nobody.
