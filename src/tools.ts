@@ -598,6 +598,7 @@ export function registerTools(server: McpServer, ctx: Context) {
       need(s, file, "r", "w");
       checkFileType(file);
       const original = await readText(s, file);
+      if (!original.etag || original.etag.startsWith("W/")) throw new Refusal("revision", "SilverBullet returned no strong revision; conditional editing is unavailable. Nothing was written.");
       if (!sameRevision(original.etag, expectedRevision)) {
         throw new Refusal("revision", `Revision conflict: ${file} is at ${revisionOf(original.etag)}, not ${revisionOf(expectedRevision.trim())}. Read it again before editing. Nothing was written.`);
       }
@@ -613,7 +614,6 @@ export function registerTools(server: McpServer, ctx: Context) {
       const { diff, truncated } = diffOf(file, original.text, prepared.content);
       let revision: string | null = revisionOf(original.etag);
       if (!dryRun && changed) {
-        if (!original.etag || original.etag.startsWith("W/")) throw new Refusal("revision", "SilverBullet returned no strong revision; conditional editing is unavailable. Nothing was written.");
         const w = await sb.write(token, s, file, prepared.content, { ifMatch: original.etag }).catch((e) => {
           if (e instanceof SbError && e.status === 412) throw new Refusal("revision", `Revision conflict: ${file} changed while editing. Read it again. Nothing was written.`);
           throw e;
@@ -644,8 +644,10 @@ export function registerTools(server: McpServer, ctx: Context) {
       const file = normalizeName(filename);
       notReportPage(file);
       need(s, file, "d");
-      await sb.delete(token, s, file, expectedRevision ? { ifMatch: `"${revisionOf(expectedRevision.trim())}"` } : {}).catch((e) => {
-        if (e instanceof SbError && e.status === 412) throw new Refusal("revision", `Revision conflict: ${file} is not at ${expectedRevision}. Read it again. Nothing was deleted.`);
+      const given = expectedRevision === undefined ? undefined : revisionOf(expectedRevision.trim());
+      if (given !== undefined && (!given || given.startsWith("W/"))) throw new Refusal("revision", `Revision conflict: ${file} is not at ${given || "an empty revision"}; a revision is sha256:<hex> as read-note returns it. Nothing was deleted.`);
+      await sb.delete(token, s, file, given ? { ifMatch: `"${given}"` } : {}).catch((e) => {
+        if (e instanceof SbError && e.status === 412) throw new Refusal("revision", `Revision conflict: ${file} is not at ${given}. Read it again. Nothing was deleted.`);
         throw e;
       });
       written(s, file, true);

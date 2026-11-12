@@ -213,6 +213,13 @@ test("access: delete needs d; alice has it under Agent/ only", async () => {
   const stale = await alice.call("delete-note", { filename: page, expectedRevision: '"sha256:stale"' });
   assert.equal(stale.isError, true);
   assert.match(stale.text, /Revision conflict/);
+  for (const bad of ['W/"sha256:abc"', "   "]) {
+    const refused = await alice.call("delete-note", { filename: page, expectedRevision: bad });
+    assert.equal(refused.isError, true);
+    assert.match(refused.text, /Revision conflict.*Nothing was deleted/);
+  }
+  const kept = await alice.call("read-note", { filename: page });
+  assert.equal(kept.isError, false, "a refused delete leaves the page");
   const deleted = await alice.call("delete-note", { filename: page, expectedRevision: created.data!.revision });
   assert.equal(deleted.isError, false, deleted.text);
   const gone = await alice.call("read-note", { filename: page });
