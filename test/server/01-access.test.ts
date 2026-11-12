@@ -61,7 +61,7 @@ test("access: deny by default: a page without any entry is refused by the access
     assert.match(r.text, /^Denied by the access list: user "alice" has no "r" on alpha\/Rendered \(effective rights: -\)/);
     const ok = await a.call("read-note", { filename: "Projects/One" });
     assert.equal(ok.isError, false, ok.text);
-    assert.match(ok.data!.revision, /^"sha256:/);
+    assert.match(ok.data!.revision, /^sha256:/);
   } finally {
     await a.close();
     await s.stop();
