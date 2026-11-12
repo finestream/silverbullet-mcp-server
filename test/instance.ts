@@ -15,7 +15,7 @@
 //   up    starts the instance, bootstraps it unless test/.state/env is current,
 //         and writes test/.state/env; with SB_URL set it does nothing: that
 //         instance is yours
-//   down  removes the instance with its volume (down -v) and test/.state/env
+//   down  removes the instance with its volume (down -v) and test/.state
 //   env   prints the project, port, URL and container name as KEY=value lines
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -130,10 +130,10 @@ export async function up(): Promise<Instance> {
   return inst;
 }
 
-/** Removes the instance with its volume, and the tokens that belonged to it. */
+/** Removes the instance with its volume, and the tokens that belonged to it (test/.state). */
 export function down() {
   compose(current(), "down", "-v");
-  rmSync(STATE_FILE, { force: true });
+  rmSync(STATE_DIR, { recursive: true, force: true });
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
