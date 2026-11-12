@@ -1,7 +1,11 @@
-// node test/bootstrap.ts   — bootstrap the instance at SB_URL (default: the instance of this
-// working copy, see test/instance.ts) with SB_ADMIN_PASSWORD (default admin-test-password).
-// node test/instance.ts up starts the instance and does this too.
-import { bootstrap } from "./lib/bootstrap.ts";
-import { derive } from "./instance.ts";
+// node test/bootstrap.ts   — bootstrap the instance at SB_URL, or this working copy's instance
+// (see test/instance.ts) with SB_ADMIN_PASSWORD (default admin-test-password).
+// node test/instance.ts up starts the instance and does this unless it is current.
+import { bootstrapInstance, current } from "./instance.ts";
 
-await bootstrap({ url: process.env.SB_URL ?? derive().url });
+if (process.env.SB_URL) {
+  const { bootstrap } = await import("./lib/bootstrap.ts");
+  await bootstrap();
+} else {
+  await bootstrapInstance(current());
+}

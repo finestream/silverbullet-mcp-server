@@ -14,15 +14,13 @@ import { spec } from "node:test/reporters";
 import { readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, basename } from "node:path";
-import { derive, up } from "./instance.ts";
+import { up } from "./instance.ts";
 
 const started = !process.env.SB_URL;
-if (started) await up();
-const url = process.env.SB_URL ?? derive().url;
+const url = process.env.SB_URL ?? (await up()).url;
 // The check files and lib/env.ts read the state when they are loaded: only now.
 const { bootstrap } = await import("./lib/bootstrap.ts");
 const { REPORT_DIR, loadEnv } = await import("./lib/env.ts");
-if (!process.env.SB_CONTAINER && loadEnv().SB_CONTAINER) process.env.SB_CONTAINER = loadEnv().SB_CONTAINER;
 const reachable = await fetch(`${url}/.dashboard/api/admin/spaces`).then((r) => r.status === 401 || r.status === 200, () => false);
 if (!reachable) {
   console.error(`No SilverBullet at ${url}. Start one with node test/instance.ts up, or set SB_URL.`);

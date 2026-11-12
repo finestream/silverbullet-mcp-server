@@ -31,7 +31,7 @@ export function loadEnv(): Record<string, string> {
       if (m) out[m[1]] = m[2];
     }
   }
-  for (const k of ["SB_URL", "SB_TOKEN_ADMIN", "SB_TOKEN_ALICE", "SB_TOKEN_BOB", "SB_TOKEN_DORA", "SB_TOKEN_SCAN", "SB_USER_PASSWORD", "SB_ADMIN_PASSWORD", "SB_CONTAINER"]) {
+  for (const k of ["SB_URL", "SB_TOKEN_ADMIN", "SB_TOKEN_ALICE", "SB_TOKEN_BOB", "SB_TOKEN_DORA", "SB_TOKEN_SCAN", "SB_USER_PASSWORD", "SB_ADMIN_PASSWORD"]) {
     if (process.env[k]) out[k] = process.env[k]!;
   }
   return out;
