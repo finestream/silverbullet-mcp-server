@@ -4,7 +4,7 @@
 // name and the port come from the working copy, so two working copies (several
 // agents, or a person and an agent) never share an instance:
 //
-//   branch claude/task-<id>-…   project sbmcp-test-<id>, port 10000+<id>
+//   branch claude/task-<id>-…   project sbmcp-test-<id>, port 10000+<id> (ids up to 55535)
 //   another linked worktree     project sbmcp-test-<hash of the path>, port 20000-39999
 //   a plain clone, and CI       project sbmcp-test, port 3300
 //
@@ -44,7 +44,7 @@ export function derive(): Instance {
   if (process.env.GITHUB_ACTIONS !== "true") {
     const task = git("branch", "--show-current").match(/^claude\/task-(\d+)(?:-|$)/)?.[1];
     const linked = git("rev-parse", "--git-dir") !== git("rev-parse", "--git-common-dir");
-    if (task) {
+    if (task && 10000 + Number(task) <= 65535) {
       project = `${DEFAULT_PROJECT}-${task}`;
       port = 10000 + Number(task);
     } else if (linked) {
