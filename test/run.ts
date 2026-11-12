@@ -1,9 +1,10 @@
 // node test/run.ts [pattern ...]
 //
 // Runs the release checks against a SilverBullet instance and writes a report
-// per version to test/report/<version>.md. The instance is SB_URL (default
-// http://127.0.0.1:3300); with SB_ADMIN_PASSWORD (default admin-test-password)
-// the bootstrap runs first and is idempotent. Patterns select check files by
+// per version to test/report/<version>.md. Without SB_URL it is the instance of
+// this working copy (test/instance.ts), started and bootstrapped if needed; with
+// SB_URL it is that instance, bootstrapped with SB_ADMIN_PASSWORD (default
+// admin-test-password) first, which is idempotent. Patterns select check files by
 // substring, for example `node test/run.ts index parser`.
 //
 // Exit code: 1 if any assumption failed or changed, else 0.
@@ -13,18 +14,23 @@ import { spec } from "node:test/reporters";
 import { readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, basename } from "node:path";
-import { bootstrap } from "./lib/bootstrap.ts";
-import { DEFAULT_URL, REPORT_DIR, loadEnv } from "./lib/env.ts";
+import { derive, up } from "./instance.ts";
 
-const url = process.env.SB_URL ?? loadEnv().SB_URL ?? DEFAULT_URL;
+const started = !process.env.SB_URL;
+if (started) await up();
+const url = process.env.SB_URL ?? derive().url;
+// The check files and lib/env.ts read the state when they are loaded: only now.
+const { bootstrap } = await import("./lib/bootstrap.ts");
+const { REPORT_DIR, loadEnv } = await import("./lib/env.ts");
+if (!process.env.SB_CONTAINER && loadEnv().SB_CONTAINER) process.env.SB_CONTAINER = loadEnv().SB_CONTAINER;
 const reachable = await fetch(`${url}/.dashboard/api/admin/spaces`).then((r) => r.status === 401 || r.status === 200, () => false);
 if (!reachable) {
-  console.error(`No SilverBullet at ${url}. Start one, for example:\n  docker compose -f test/compose.yaml up -d --wait\nor set SB_URL.`);
+  console.error(`No SilverBullet at ${url}. Start one with node test/instance.ts up, or set SB_URL.`);
   process.exit(2);
 }
 
 try {
-  await bootstrap({ url });
+  if (!started) await bootstrap({ url });
 } catch (e) {
   const haveState = loadEnv().SB_TOKEN_ALICE;
   if (!haveState) throw e;
