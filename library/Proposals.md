@@ -8,11 +8,11 @@ version: "0.7.0"
 proposalFormat: 1
 ---
 > **note**
-> This page is generated from `library/src/` of [finestream/silverbullet-mcp](https://github.com/finestream/silverbullet-mcp) by `npm run build:library`. Edit the files there.
+> This page is generated from `library/src/` of [finestream/silverbullet-mcp-server](https://github.com/finestream/silverbullet-mcp-server) by `npm run build:library`. Edit the files there.
 
 # Proposals
 
-The review of *change proposals*: an agent that may not write a page asks for a change through the [SilverBullet MCP server](https://github.com/finestream/silverbullet-mcp), which writes a proposal page; you review it here as a diff and apply it with your own rights. The design is [docs/proposals.md](https://github.com/finestream/silverbullet-mcp/blob/main/docs/proposals.md) of the server.
+The review of *change proposals*: an agent that may not write a page asks for a change through the [SilverBullet MCP server](https://github.com/finestream/silverbullet-mcp-server), which writes a proposal page; you review it here as a diff and apply it with your own rights. The design is [docs/proposals.md](https://github.com/finestream/silverbullet-mcp-server/blob/main/docs/proposals.md) of the server.
 
 A proposal does one thing to one page: it *edits* it, *deletes* it or *moves* it (which is also how a new page an agent wrote gets to its place). Several proposals that belong together carry the same *group* and are reviewed as one batch.
 

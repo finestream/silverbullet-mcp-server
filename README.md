@@ -46,7 +46,7 @@ The server in `src/` serves the ten tools below as the authenticated user, with 
 | [`test/`](test) | The release checks (a compose test instance, a bootstrap through the admin API, one check per assumption, a report per SilverBullet version) and, in `test/server/`, the server's integration tests against the same instance; in `test/library/`, the tests of the Proposals library in a browser client (`npm run test:library`) |
 | [`scripts/acceptance.ts`](scripts/acceptance.ts) | The acceptance test of a running server, from any machine that reaches it (*Acceptance test* below) |
 | [`Dockerfile`](Dockerfile), [`compose.example.yaml`](compose.example.yaml) | The image (`node:24-alpine`, non-root) and how to run it next to SilverBullet with secrets from files |
-| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | Lint, unit and integration tests, the check and the browser tests of the Proposals library, and a build of the image on every pull request; the image is pushed to `ghcr.io/finestream/silverbullet-mcp` on a version tag |
+| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | Lint, unit and integration tests, the check and the browser tests of the Proposals library, and a build of the image on every pull request; the image is pushed to `ghcr.io/finestream/silverbullet-mcp-server` on a version tag |
 
 ## Run
 
