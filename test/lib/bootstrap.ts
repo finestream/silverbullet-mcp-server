@@ -1,7 +1,8 @@
 // Bootstraps a SilverBullet instance in multi-space mode through its admin API:
 // Runtime API on, users alice, bob and scan (the server's technical user),
 // spaces alpha, beta and gamma with their grants, one API token per user, and
-// the seed pages. Idempotent: a second run keeps what exists, except CONFIG,
+// the seed pages; and dora with the space delta, where the Proposals library
+// is installed as the repository builds it (always rewritten). Idempotent: a second run keeps what exists, except CONFIG,
 // which is always rewritten (the checks change it), and the index pages that
 // have a seed (SilverBullet creates a stock index page with code in it).
 //
@@ -12,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { join, relative } from "node:path";
 import { client } from "./sb.ts";
 import { configPage } from "./transform.ts";
+import { buildLibrary, LIBRARY_PAGE } from "../../scripts/build-library.ts";
 import { DEFAULT_ADMIN_PASSWORD, DEFAULT_URL, DEFAULT_USER_PASSWORD, SEED_DIR, STATE_DIR, SPACES, USERS, SCAN_USER } from "./env.ts";
 
 export type BootstrapOptions = {
@@ -26,10 +28,12 @@ const GRANTS: Record<string, Record<string, { role: "read" | "write"; runtimeApi
   beta: { bob: { role: "write", runtimeApi: true }, scan: { role: "write", runtimeApi: false } },
   // Clean, for the render tests (docs/security.md, section 12): alice renders, bob is a read member.
   gamma: { alice: { role: "write", runtimeApi: true }, bob: { role: "read" }, scan: { role: "write", runtimeApi: false } },
+  // Where the Proposals library is tested (test/library/): dora is the person who reviews. Not one of the server's spaces.
+  delta: { dora: { role: "write", runtimeApi: true } },
 };
 
 /** The space a user can certainly read, to validate a stored token. */
-const PROBE_SPACE: Record<string, string> = { admin: "alpha", alice: "alpha", bob: "beta", scan: "alpha" };
+const PROBE_SPACE: Record<string, string> = { admin: "alpha", alice: "alpha", bob: "beta", dora: "delta", scan: "alpha" };
 
 export async function bootstrap(opts: BootstrapOptions = {}) {
   const url = opts.url ?? process.env.SB_URL ?? DEFAULT_URL;
@@ -74,7 +78,7 @@ export async function bootstrap(opts: BootstrapOptions = {}) {
   // Spaces created by an earlier bootstrap may lack the scan user: add it.
   const spaceList = (await sb.admin.api(admin, "GET", "/admin/spaces")).json as Record<string, { name: string; members?: Record<string, unknown> }> | null;
   for (const [id, space] of Object.entries(spaceList ?? {})) {
-    if (GRANTS[space.name] && space.members && !(SCAN_USER in space.members)) {
+    if (GRANTS[space.name]?.[SCAN_USER] && space.members && !(SCAN_USER in space.members)) {
       expect(`member scan on ${space.name}`, await sb.admin.api(admin, "PATCH", `/admin/spaces/${id}`, { members: { ...space.members, [SCAN_USER]: GRANTS[space.name][SCAN_USER] } }));
     }
   }
@@ -116,11 +120,14 @@ export async function bootstrap(opts: BootstrapOptions = {}) {
     if (existsSync(index)) expect(`index of ${space}`, await sb.write(tokens.admin, space, "index.md", readFileSync(index)), [200, 201, 204]);
   }
 
+  expect("Proposals library in delta", await sb.write(tokens.admin, SPACES.delta, `${LIBRARY_PAGE}.md`, buildLibrary()), [200, 201, 204]);
+
   const envText = [
     `SB_URL=${url}`,
     `SB_TOKEN_ADMIN=${tokens.admin}`,
     `SB_TOKEN_ALICE=${tokens.alice}`,
     `SB_TOKEN_BOB=${tokens.bob}`,
+    `SB_TOKEN_DORA=${tokens.dora}`,
     `SB_TOKEN_SCAN=${tokens.scan}`,
     `SB_USER_PASSWORD=${userPassword}`,
     "",

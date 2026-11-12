@@ -21,12 +21,16 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - name: The committed library is what library/src/ builds
+        run: node scripts/build-library.ts --check
       - run: npm run test:unit
       - name: Start the SilverBullet test instance
         run: docker compose -f test/compose.yaml up -d --wait
       - name: Bootstrap the test instance
         run: node test/bootstrap.ts
       - run: npm run test:integration
+      - name: The Proposals library in the browser
+        run: npm run test:library
       - name: Release checks (parser, filter, access, API, transclusion)
         run: SB_BROWSER=0 node test/run.ts access parser cost api transclusion
       - name: Stop the test instance

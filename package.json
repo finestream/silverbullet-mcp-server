@@ -1,6 +1,6 @@
 {
   "name": "silverbullet-mcp",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "An MCP server for a SilverBullet instance in multi-space mode: per-user credentials, an access list, a write filter and a scan that keep code out of the pages agents write, and pages rendered through the Runtime API.",
@@ -15,7 +15,9 @@
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "node --test 'src/**/*.test.ts'",
     "test:integration": "node --test --test-concurrency=1 'test/server/*.test.ts'",
+    "test:library": "node --test --test-concurrency=1 'test/library/*.test.ts'",
     "test:release": "node test/run.ts",
+    "build:library": "node scripts/build-library.ts",
     "bootstrap": "node test/bootstrap.ts"
   },
   "dependencies": {

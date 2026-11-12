@@ -1,6 +1,6 @@
 # Change proposals
 
-Status: **proposed** (2026-11-11). Nothing of this document is built yet. It records the design of change proposals: how an agent asks for a change to a page it may not write, and how a person reviews and applies it. The terms *user*, *person*, *agent* and *operator* are those of [security.md](security.md), section 1.
+Status: **proposed** (2026-11-11); the library of section 5 is built in [`library/`](../library), the tools of section 4 are not yet. It records the design of change proposals: how an agent asks for a change to a page it may not write, and how a person reviews and applies it. The terms *user*, *person*, *agent* and *operator* are those of [security.md](security.md), section 1.
 
 ## 1. The problem
 
@@ -63,12 +63,14 @@ Three tools, beside the ten the server has. None writes the target.
 
 The library lives in this repository and is released with the server. It is code, so it is installed under `Library/` by the operator ([space-guidelines.md](space-guidelines.md)); the server never writes it. Its functions go on the allowlist like any other library's.
 
-* **The list** shows the open proposals: target, action, group and state. *Apply all* applies those of a group, or all of them, after one confirmation that names the targets.
+* **The list** shows the open proposals: target, action, group and state. *Apply all* applies those of a group, or all of them, after one confirmation that names the targets; a proposal that could not be read when the list was drawn is not applied this way.
 * **The review** of a proposal shows its reason and the change as a diff of the target as it is now against the target with the proposal applied: *formatted* (the page as it will look, changed lines struck through or highlighted) or as *text* (source lines, changed words highlighted). The frontmatter is shown before and after when the change touches it. A `delete` shows the page and the pages that link to it; a `move` shows both names.
-* **Apply** writes with the rights of the person who clicks. It reads the proposal and the target again and runs the stale check first. Applying a `delete` deletes the page; applying a `move` renames it and updates the links to it.
+* **Apply** writes with the rights of the person who clicks. It reads the proposal and the target again and runs the stale check first. Every button is bound to what the person was shown: the proposal page, its action and target, and the target (and working copy) as shown. When any of them changed in the meantime, the action is refused and the review drawn again, so an agent cannot swap a proposal between the review and the click.
+* **The proposal folder** is set in the library to the folder the operator configured for proposals in the server. Only pages in it that carry the proposal tag are listed or rejected, and only those that also carry the target's revision, with a target (and new name) outside this folder and the folder of the working copies, can be applied; the working copies live in a folder of their own outside it, which agents may not write. Applying a `delete` deletes the page; applying a `move` renames it and updates the links to it.
 * **Edit** creates a working copy: the target with the proposal applied, as a page the person edits in the editor. A bar of buttons above it offers *Accept* (write the working copy to the target, after checking that the target did not change since the copy was made), *Revert to proposal* (build the working copy again), *Preview* (the review's diff, against the working copy) and *Reject*. The proposal itself is not rewritten. There is no working copy for `delete` and `move`.
 * **After *Apply*, *Accept* or *Reject*** the proposal page and its working copy are deleted, and the review goes on to the next proposal of the batch.
-* **Nothing runs before a person applies.** The formatted view is rendered by SilverBullet's own Markdown renderer, which shows `${…}` as text; the working copy is a page like any other, bound by the index-time transform ([security.md](security.md), section 10).
+* **The batch** is the open proposals of one group, in the order of the list; the position shown (*5 / 20*) counts those already applied or rejected in the person's browser, so it does not shift while the batch is worked through.
+* **Nothing runs before a person applies.** Everything an agent wrote is inside a fenced block on the proposal page, the reason included, so nothing of it is live there. The formatted view is rendered by SilverBullet's own Markdown renderer, which shows `${…}` as text, and then loses styles, style sheets, embedded documents and remote images (taken out before rendering, and the result sanitized in a document of its own, so none is ever requested), so a proposal can neither paint over the change nor tell that its review is open; when the page holds HTML, the review opens on the text view. The working copy is a page like any other, bound by the index-time transform ([security.md](security.md), section 10).
 
 ## 6. What follows
 
@@ -76,7 +78,7 @@ The library lives in this repository and is released with the server. It is code
 * While a person edits a working copy, that page exists beside its target with the same tags and frontmatter, and appears in queries.
 * The space needs the library in the version the server expects. The server's report page says when it is missing or does not match, and only the proposal tools are refused: reading, writing and rendering go on.
 * The library *Utilities* keeps no proposal code once this library exists.
-* Two things the library relies on are to be measured before it is built, and asserted by the release checks: that a page can be renamed from Space Lua with its links updated, and that a library can show a widget above the pages of one folder only.
+* Two things the library relies on are asserted by its tests in [`test/library/`](../test/library): that a page can be renamed from Space Lua with its links updated, and that a library can show a widget above the pages of one folder only.
 
 ## 7. Alternatives rejected
 

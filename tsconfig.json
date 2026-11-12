@@ -16,6 +16,6 @@
     "checkJs": false,
     "esModuleInterop": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "eslint.config.js"],
+  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts", "eslint.config.js"],
   "exclude": ["node_modules", "src/filter/vendor"]
 }

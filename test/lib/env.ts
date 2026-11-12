@@ -2,7 +2,9 @@
 // (written by the bootstrap) or from the environment (SB_URL, SB_TOKEN_*).
 // The fixtures are fixed: users alice (write + Runtime API on alpha and gamma,
 // nothing on beta), bob (read on alpha and gamma, write + Runtime API on beta)
-// and scan (write on every space, the server's technical user), plus admin.
+// and scan (write on alpha, beta and gamma, the server's technical user), plus
+// admin; and dora, a person who reviews change proposals in delta, the space
+// that has the Proposals library installed (test/library/).
 
 import { existsSync, readFileSync } from "node:fs";
 import { client } from "./sb.ts";
@@ -15,9 +17,9 @@ export const DEFAULT_URL = "http://127.0.0.1:3300";
 export const DEFAULT_ADMIN_PASSWORD = "admin-test-password";
 export const DEFAULT_USER_PASSWORD = "user-test-password";
 
-export const SPACES = { alpha: "alpha", beta: "beta", gamma: "gamma" } as const;
-export const USERS = ["alice", "bob"] as const;
-/** The server's technical user (docs/security.md, section 7): a write member of both spaces. */
+export const SPACES = { alpha: "alpha", beta: "beta", gamma: "gamma", delta: "delta" } as const;
+export const USERS = ["alice", "bob", "dora"] as const;
+/** The server's technical user (docs/security.md, section 7): a write member of the spaces the server is tested on. */
 export const SCAN_USER = "scan";
 
 export function loadEnv(): Record<string, string> {
@@ -29,7 +31,7 @@ export function loadEnv(): Record<string, string> {
       if (m) out[m[1]] = m[2];
     }
   }
-  for (const k of ["SB_URL", "SB_TOKEN_ADMIN", "SB_TOKEN_ALICE", "SB_TOKEN_BOB", "SB_TOKEN_SCAN", "SB_USER_PASSWORD", "SB_ADMIN_PASSWORD"]) {
+  for (const k of ["SB_URL", "SB_TOKEN_ADMIN", "SB_TOKEN_ALICE", "SB_TOKEN_BOB", "SB_TOKEN_DORA", "SB_TOKEN_SCAN", "SB_USER_PASSWORD", "SB_ADMIN_PASSWORD"]) {
     if (process.env[k]) out[k] = process.env[k]!;
   }
   return out;
@@ -55,6 +57,9 @@ export const T = {
   },
   get bob() {
     return need("SB_TOKEN_BOB");
+  },
+  get dora() {
+    return need("SB_TOKEN_DORA");
   },
   get scan() {
     return need("SB_TOKEN_SCAN");
