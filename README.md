@@ -1,4 +1,4 @@
-# silverbullet-mcp
+# silverbullet-mcp-server
 
 An MCP server for a [SilverBullet](https://silverbullet.md) instance in multi-space mode: several agents, each acting as its own SilverBullet user, every space that user may reach, and pages rendered the way SilverBullet shows them.
 
