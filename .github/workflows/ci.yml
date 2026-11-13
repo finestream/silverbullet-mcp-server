@@ -31,8 +31,8 @@ jobs:
       - run: npm run test:integration
       - name: The Proposals library in the browser
         run: npm run test:library
-      - name: Release checks (parser, filter, access, API, transclusion)
-        run: SB_BROWSER=0 node test/run.ts access parser cost api transclusion
+      - name: Release checks (access, parser, cost, API, transclusion, redaction)
+        run: SB_BROWSER=0 node test/run.ts access parser cost api transclusion redaction
       - name: Stop the test instance
         if: always()
         run: docker compose -f test/compose.yaml down -v
