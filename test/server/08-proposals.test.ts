@@ -51,11 +51,27 @@ const lua = async <V>(script: string): Promise<V> => {
   return r.result as V;
 };
 
+/**
+ * Restarts the runtimes, so that alice's loads the library just installed. A reset now and then
+ * leaves the runtime "not ready" for minutes; a second reset brings it back (as test/library/lib.ts does).
+ */
+async function freshRuntime() {
+  for (let attempt = 1; ; attempt++) {
+    await sb.admin.resetRuntimes(T.admin);
+    try {
+      await sb.runtimeReady(T.alice, SPACE, 45000);
+      return;
+    } catch (e) {
+      if (attempt === 3) throw e;
+    }
+  }
+}
+
 before(async () => {
   const w = await sb.write(T.admin, SPACE, LIBRARY, buildLibrary());
   assert.ok([200, 201, 204].includes(w.status), `installing the library: ${w.status}`);
   await sb.remove(T.admin, "alpha", LIBRARY);
-  server = await startServer({ accessList: DEFAULT_ACCESS_LIST + "alice gamma Proposals/ rw\nalice alpha Proposals/ rw\n" });
+  server = await startServer({ accessList: DEFAULT_ACCESS_LIST + "alice gamma Proposals/ rw\nalice alpha Proposals/ rw\nalice gamma Hidden/ -\n" });
   alice = await connect(server.url, BEARERS.alice);
   bob = await connect(server.url, BEARERS.bob);
 });
@@ -86,8 +102,7 @@ test("propose-edit: writes a proposal page that the library lists and applies, a
   assert.deepEqual(stored, { action: "edit", target: page, revision, reason: "Watering moved.", group: "7", edits });
 
   // The library, in alice's runtime: it lists the proposal and applies it with alice's SilverBullet rights.
-  await sb.admin.resetRuntimes(T.admin);
-  await sb.runtimeReady(T.alice, SPACE, 90000);
+  await freshRuntime();
   const loaded = await until(async () => (await sb.lua(T.alice, SPACE, "return proposals and proposals.version")).result === VERSION, 60000, 500);
   assert.ok(loaded.value, `the library in ${SPACE} does not answer version ${VERSION}`);
   const listed = await until(
@@ -120,13 +135,17 @@ test("propose-delete and propose-move: the proposal pages carry the action, the 
 
 test("propose-*: what could not be applied, or needs no proposal, is refused and nothing is written", async () => {
   const { page, revision } = await target("one\n\none\n\ntwo\n");
+  const hidden = await sb.write(T.admin, SPACE, track(SPACE, "Hidden/Existing.md"), "secret\n");
+  assert.ok([200, 201, 204].includes(hidden.status));
   const edit = (args: Record<string, unknown>) => alice.call("propose-edit", { space: SPACE, filename: page, expectedRevision: revision, reason: "r", name: proposalName("Refused"), edits: [{ oldText: "two", newText: "three" }], ...args });
   const cases: Array<[string, Promise<{ isError: boolean; text: string }>, RegExp]> = [
     ["a stale revision", edit({ expectedRevision: "sha256:" + "0".repeat(64) }), /Revision conflict: .* Nothing was proposed\./],
     ["an old text that is not there", edit({ edits: [{ oldText: "four", newText: "x" }] }), /expected 1 exact match\(es\), found 0\. Nothing was proposed\./],
     ["an old text found more often than expected", edit({ edits: [{ oldText: "one", newText: "x" }] }), /found more than expected/],
     ["overlapping edits", edit({ edits: [{ oldText: "two", newText: "x" }, { oldText: "tw", newText: "y" }] }), /overlap/],
-    ["a result with code", edit({ edits: [{ oldText: "two", newText: "```space-lua\nx = 1\n```" }] }), /Refused by the write filter/],
+    ["a result with code", edit({ edits: [{ oldText: "two", newText: "```space-lua\nx = 1\n```" }] }), /Refused by the write filter: .*\. Nothing was proposed\. Pages outside/],
+    ["an empty reason", edit({ reason: "" }), /The reason is empty; .* Nothing was proposed\./],
+    ["a blank reason", edit({ reason: " \n\t " }), /The reason is empty/],
     ["edits that change nothing", edit({ edits: [{ oldText: "two", newText: "two" }] }), /change nothing/],
     ["a target in the proposal folder", edit({ filename: "Proposals/Some proposal" }), /lies in the proposal folder/],
     ["a target among the working copies", edit({ filename: "Working copies/Some proposal" }), /folder of the working copies/],
@@ -136,6 +155,8 @@ test("propose-*: what could not be applied, or needs no proposal, is refused and
     ["a move into Library/", alice.call("propose-move", { space: SPACE, filename: page, newName: "Library/Moved", expectedRevision: revision, reason: "r", name: proposalName("Refused") }), /CONFIG or lies in Library\//],
     ["a move onto a page that exists", alice.call("propose-move", { space: SPACE, filename: page, newName: "index", expectedRevision: revision, reason: "r", name: proposalName("Refused") }), /exists already; a move cannot replace a page/],
     ["a move into the proposal folder", alice.call("propose-move", { space: SPACE, filename: page, newName: "Proposals/Moved", expectedRevision: revision, reason: "r", name: proposalName("Refused") }), /lies in the proposal folder/],
+    ["a move onto a page the user may not read", alice.call("propose-move", { space: SPACE, filename: page, newName: "Hidden/Existing", expectedRevision: revision, reason: "r", name: proposalName("Refused") }), /Denied by the access list: user "alice" has no "r" on gamma\/Hidden\/Existing/],
+    ["a move to a free name the user may not read", alice.call("propose-move", { space: SPACE, filename: page, newName: "Hidden/Free", expectedRevision: revision, reason: "r", name: proposalName("Refused") }), /Denied by the access list: user "alice" has no "r" on gamma\/Hidden\/Free/],
     ["no w where proposals live", bob.call("propose-edit", { space: SPACE, filename: page, expectedRevision: revision, reason: "r", name: proposalName("Refused"), edits: [{ oldText: "two", newText: "x" }] }), /Denied by the access list: user "bob" has no "w" on gamma\/Proposals\//],
   ];
   for (const [what, call, expected] of cases) {
@@ -177,4 +198,21 @@ test("without the library, or with another version, only the proposal tools are 
   assert.equal(other.isError, true);
   assert.match(other.text, new RegExp(`is version 0\\.0\\.1, the server ${VERSION.replace(/\./g, "\\.")}`));
   assert.match((await sb.read(T.admin, "alpha", "MCP Server.md")).text, /proposal tools unavailable\*\*: `the library at Library\/Finestream\/Proposals is version 0\.0\.1/);
+});
+
+test("the proposal page is never the report page, also when the report page lies in the proposal folder", async () => {
+  const s = await startServer({ accessList: DEFAULT_ACCESS_LIST + "alice gamma Proposals/ rw\n", env: { MCP_REPORT_PAGE: "Proposals/Report" } });
+  const a = await connect(s.url, BEARERS.alice);
+  try {
+    const { page, revision } = await target("x\n");
+    const before = (await sb.read(T.admin, SPACE, "Proposals/Report.md")).text;
+    const r = await a.call("propose-delete", { space: SPACE, filename: page, expectedRevision: revision, reason: "r", name: "Report" });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /"Proposals\/Report" is the server's report page/);
+    assert.equal((await sb.read(T.admin, SPACE, "Proposals/Report.md")).text, before, "the report page is unchanged");
+  } finally {
+    await a.close();
+    await s.stop();
+    for (const space of ["alpha", "beta", "gamma"]) await sb.remove(T.admin, space, "Proposals/Report.md");
+  }
 });

@@ -7,6 +7,7 @@
 import { readFileSync, statSync, watchFile, unwatchFile } from "node:fs";
 import { loadOAuthConfig, type OAuthConfig } from "./oauth.ts";
 import { loadCfAccessConfig, type CfAccessConfig } from "./cf-access.ts";
+import { isCodePlace } from "./filter/filter.ts";
 
 export type ScanMode = "report" | "quarantine";
 
@@ -102,13 +103,29 @@ export function parseFolder(text: string | undefined, fallback: string): string 
 }
 
 /**
+ * Why a folder cannot hold proposals or working copies, or null: a name the tools refuse (the rules
+ * of `normalizeName`), or a place for code, where the write filter does not apply.
+ */
+export function folderProblem(folder: string): string | null {
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f\\]/.test(folder)) return "holds a control character or a backslash";
+  if (folder.slice(0, -1).split("/").some((segment) => segment === "" || segment === "." || segment === ".." || segment.startsWith("."))) return 'has an empty, "." or dot-prefixed segment';
+  if (isCodePlace(folder) || isCodePlace(folder.slice(0, -1))) return "lies in CONFIG or Library/, where pages are code and the write filter does not apply";
+  return null;
+}
+
+/**
  * The proposal folder and the folder of the working copies; throws when one lies inside the other,
  * as the library refuses to work then (a working copy in the proposal folder could be written by
- * the agents that write proposals).
+ * the agents that write proposals), or when either is not a folder for data pages.
  */
 export function parseProposalFolders(proposals: string | undefined, workingCopies: string | undefined): { proposalsDir: string; workingCopiesDir: string } {
   const proposalsDir = parseFolder(proposals, DEFAULT_PROPOSALS_DIR);
   const workingCopiesDir = parseFolder(workingCopies, DEFAULT_WORKING_COPIES_DIR);
+  for (const [name, folder] of [["MCP_PROPOSALS_DIR", proposalsDir], ["MCP_WORKING_COPIES_DIR", workingCopiesDir]]) {
+    const problem = folderProblem(folder);
+    if (problem) throw new Error(`${name} ("${folder}") ${problem}`);
+  }
   if (proposalsDir.startsWith(workingCopiesDir) || workingCopiesDir.startsWith(proposalsDir)) {
     throw new Error(`MCP_PROPOSALS_DIR ("${proposalsDir}") and MCP_WORKING_COPIES_DIR ("${workingCopiesDir}") must not lie inside each other`);
   }

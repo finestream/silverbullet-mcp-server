@@ -186,9 +186,9 @@ One container (`node:24-alpine`, non-root, read-only root filesystem; [`Dockerfi
 | `create-note` | `PUT` + `If-None-Match: *` | file-type check, write filter on the result; `overwrite` for a plain `PUT` |
 | `edit-note` | `GET`, then `PUT` + `If-Match` | `expectedRevision` required, `dryRun` returns the diff; write filter on the result |
 | `delete-note` | `DELETE` + `If-Match` | needs `d`; `expectedRevision` optional |
-| `propose-edit` | `GET` of the target, then `PUT` + `If-None-Match: *` of the proposal page | `r` on the target, `w` on the proposal page; `expectedRevision` required; the edits tested as `edit-note` tests them, write filter on the result and on the proposal page; returns the diff ([proposals.md](proposals.md), section 4) |
-| `propose-delete` | as above | as above, without edits; refused for a user with `d` on the target |
-| `propose-move` | as above, and a `GET` of the new name | as above; nothing may exist under the new name, and the page must pass the write filter there |
+| `propose-edit` | `GET` of the target, then `PUT` + `If-None-Match: *` of the proposal page | `r` on the target, `w` on the proposal page; `expectedRevision` required; the edits tested as `edit-note` tests them, write filter on the result and on the proposal page; returns the diff; refused for a user with `w` on the target ([proposals.md](proposals.md), section 4) |
+| `propose-delete` | as above | `r` on the target, `w` on the proposal page; `expectedRevision` required; refused for a user with `d` on the target |
+| `propose-move` | as above, and a `GET` of the new name | as above, without the refusal; `r` on the new name, under which nothing may exist, and the page must pass the write filter there |
 | `render-note` | `GET /<s>/.fs/<path>`, then `POST /<s>/.runtime/lua_script` | needs `x`; `.md` only; no `revision`; refused while the space has scan findings; waits for the index after a write; refused when the render loaded a page or file the user has no `r` on (the render check) |
 | `screenshot-note` | as above, `lua_script` (park, navigate, settle) + `GET /<s>/.runtime/screenshot` | needs `x`; `.md` only; `selector`, `fullPage` (passed on; ignored by 2.12.1); PNG as MCP image content; the render check before and after the capture |
 

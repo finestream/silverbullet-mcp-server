@@ -130,7 +130,7 @@ Four files, the last optional, and a few variables. The files are re-read when t
 | `MCP_SCAN_MODE` | `report` | `report` or `quarantine` ([docs/security.md](docs/security.md), section 7) |
 | `MCP_REPORT_PAGE` | `MCP Server` | The report page of every guarded space, written at this page name; a path such as `Space/MCP Server` puts it in a folder ([docs/security.md](docs/security.md), section 8) |
 | `MCP_PROPOSALS_DIR` | `Proposals/` | The folder the proposal tools write to; the same folder as `proposalPrefix` in the library's configuration ([docs/proposals.md](docs/proposals.md), section 4) |
-| `MCP_WORKING_COPIES_DIR` | `Working copies/` | The folder of the library's working copies (`workingCopyPrefix`), which no proposal may target; it may not lie inside the proposal folder, nor that inside it |
+| `MCP_WORKING_COPIES_DIR` | `Working copies/` | The folder of the library's working copies (`workingCopyPrefix`), which no proposal may target; it may not lie inside the proposal folder, nor that inside it, and neither may lie in `CONFIG` or `Library/` |
 | `MCP_RATE_LIMIT` | `120` | Tool calls per user and minute; `0` for none |
 | `MCP_RENDER_PARALLEL` | `4` | Runtime API calls in flight at once, over all users and spaces (*Rendering* below) |
 | `MCP_RENDER_TIMEOUT` | `90s` | The most a `render-note` or `screenshot-note` call may take, queue and index wait included |
@@ -150,9 +150,9 @@ Four files, the last optional, and a few variables. The files are re-read when t
 |---|---|---|
 | `propose-edit` | those of `edit-note` (`filename`, `edits`, `expectedRevision`), `reason`, `name`, optional `group` | the target is at that revision; every old text occurs as often as expected, no two overlap; the resulting page passes the write filter. Answers with the diff, as the dry run of `edit-note` does |
 | `propose-delete` | `filename`, `expectedRevision`, `reason`, `name`, optional `group` | the target is at that revision |
-| `propose-move` | `filename`, `newName`, `expectedRevision`, `reason`, `name`, optional `group` | the target is at that revision; nothing exists under the new name; the page passes the write filter there |
+| `propose-move` | `filename`, `newName`, `expectedRevision`, `reason`, `name`, optional `group` | the target is at that revision; the user may read the new name, and nothing exists under it; the page passes the write filter there |
 
-None writes the target: each writes one proposal page, `<MCP_PROPOSALS_DIR><name>`, as the user, which a person reviews and applies with the library. They need `r` on the target and `w` on the proposal page; a user who may write (or, for a delete, delete) the target is told to use `edit-note` (or `delete-note`). The target and a new name must be pages outside `CONFIG`, `Library/`, the proposal folder and the folder of the working copies. In a space without the library, or with a library of another version, only these three tools are refused, and the report page says so. The semantics, the SilverBullet calls and the rights each tool needs are in [docs/architecture.md](docs/architecture.md), *Tool surface*.
+None writes the target: each writes one proposal page, `<MCP_PROPOSALS_DIR><name>`, as the user, which a person reviews and applies with the library. They need `r` on the target, `w` on the proposal page and a reason that is not blank; a user who may write (or, for a delete, delete) the target is told to use `edit-note` (or `delete-note`). The target and a new name must be pages outside `CONFIG`, `Library/`, the proposal folder and the folder of the working copies. In a space without the library, or with a library of another version, only these three tools are refused, and the report page says so. The semantics, the SilverBullet calls and the rights each tool needs are in [docs/architecture.md](docs/architecture.md), *Tool surface*.
 
 ## Rendering
 

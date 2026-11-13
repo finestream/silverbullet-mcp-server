@@ -64,3 +64,19 @@ test("the proposal folders default to the library's, end in one slash, and may n
   assert.throws(() => parseProposalFolders("Same", "Same/"), /must not lie inside each other/);
   assert.deepEqual(parseProposalFolders("Review", "Reviewed"), { proposalsDir: "Review/", workingCopiesDir: "Reviewed/" }, "a shared prefix of the name is not inside");
 });
+
+test("a proposal folder in CONFIG or Library/, or with a name the tools refuse, stops the start", () => {
+  for (const [value, problem] of [
+    ["Library/Proposals", /MCP_PROPOSALS_DIR \("Library\/Proposals\/"\) lies in CONFIG or Library\//],
+    ["Library", /lies in CONFIG or Library\//],
+    ["CONFIG", /lies in CONFIG or Library\//],
+    ["Agent/../Library", /empty, "\." or dot-prefixed segment/],
+    ["Agent//Proposals", /empty, "\." or dot-prefixed segment/],
+    [".hidden", /dot-prefixed segment/],
+    ["Pro\\posals", /control character or a backslash/],
+  ] as const) {
+    assert.throws(() => loadConfig({ MCP_PROPOSALS_DIR: value }), problem, value);
+  }
+  assert.throws(() => loadConfig({ MCP_WORKING_COPIES_DIR: "Library/Copies" }), /MCP_WORKING_COPIES_DIR \("Library\/Copies\/"\) lies in CONFIG or Library\//);
+  assert.equal(loadConfig({ MCP_PROPOSALS_DIR: "Configured/Proposals" }).proposalsDir, "Configured/Proposals/", "a name that only starts like CONFIG is fine");
+});
