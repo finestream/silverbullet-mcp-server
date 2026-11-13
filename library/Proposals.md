@@ -1357,6 +1357,26 @@ function proposals.markdownBlock(text, style)
 end
 
 -----------------------------------------------------------------------
+-- proposals.dedentFence(text)
+--
+-- A block that starts with a fence indented four or more spaces (a fence
+-- of a list item, which proposals.blocks keeps apart from the item at the
+-- blank line before it) with the opening fence's indent removed from its
+-- lines: rendered alone, such a block would be an indented code block
+-- showing the fence markers as text. Any other text is returned as is.
+-----------------------------------------------------------------------
+function proposals.dedentFence(text)
+	local indent, rest = string.match(text, "^( +)([^\n]*)")
+	if not indent or #indent < 4 or not proposals.fenceOpening(rest) then return text end
+	local out = {}
+	for _, line in ipairs(proposals.lines(text)) do
+		local lead = string.match(line, "^ *")
+		table.insert(out, string.sub(line, math.min(#lead, #indent) + 1))
+	end
+	return table.concat(out, "\n")
+end
+
+-----------------------------------------------------------------------
 -- proposals.rendered(text, kind)
 --
 -- A piece of markdown rendered as one block of the formatted view:
@@ -1375,7 +1395,7 @@ function proposals.rendered(text, kind)
 	else
 		style = style .. "border-left:3px solid transparent;"
 	end
-	return proposals.markdownBlock(text, style)
+	return proposals.markdownBlock(proposals.dedentFence(text), style)
 end
 
 -----------------------------------------------------------------------

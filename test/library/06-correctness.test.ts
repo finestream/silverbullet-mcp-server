@@ -118,6 +118,7 @@ test("correctness: a fence with a blank line in a nested list item is one block,
   assert.equal(r.headings, 0);
   assert.equal(r.pre.length, 1, JSON.stringify(r.pre));
   assert.match(r.pre[0], /first\s*# not a heading/);
+  assert.ok(!r.pre[0].includes("```"), `the pre shows the fence markers: ${r.pre[0]}`);
   assert.ok(!r.rest.includes("```"), `a fence is left as text: ${r.rest}`);
 });
 
@@ -127,6 +128,7 @@ test("correctness: a change inside a nested fence shows the block whole, removed
   assert.equal(r.pre.length, 2, JSON.stringify(r.pre));
   assert.match(r.pre[0], /first\s*x = 1/);
   assert.match(r.pre[1], /first\s*x = 2/);
+  for (const pre of r.pre) assert.ok(!pre.includes("```"), `the pre shows the fence markers: ${pre}`);
   assert.ok(!r.rest.includes("```"), `a fence is left as text: ${r.rest}`);
 });
 
@@ -136,6 +138,7 @@ test("correctness: a fence in a blockquote stays one block", async () => {
   assert.equal(r.headings, 0);
   assert.equal(r.pre.length, 1, JSON.stringify(r.pre));
   assert.match(r.pre[0], /first\s*# not a heading/);
+  assert.ok(!r.pre[0].includes("```"), `the pre shows the fence markers: ${r.pre[0]}`);
 });
 
 test("correctness: a fence at top level with a blank line is unchanged", async () => {
