@@ -180,7 +180,7 @@ One container (`node:24-alpine`, non-root, read-only root filesystem; [`Dockerfi
 |---|---|---|
 | `list-spaces` | `GET /<s>/.config` per prefix | SilverBullet's `read`/`write`, the access-list entries that apply, and the server's state per space (refusal, render block) |
 | `list-notes` | `GET /<s>/.fs`, `GET /<s>/.config` | pages and other files the user may read, each with the user's effective rights (the access list, without `w` and `d` where `/.config` says `readOnly`; the listing's `perm` field is not used, see *Access and identity* above); `namePattern`, cursor paging |
-| `read-note` | `GET /<s>/.fs/<path>` | returns `revision` (the ETag), offset/limit; `.md` added to a name without extension; other files as text or base64 |
+| `read-note` | `GET /<s>/.fs/<path>` | returns `revision` (the ETag without its quotation marks), offset/limit; `.md` added to a name without extension; other files as text or base64 |
 | `read-multiple-notes` | as above | |
 | `search-notes` | `/.fs` + match in server | `/.search` when available |
 | `create-note` | `PUT` + `If-None-Match: *` | file-type check, write filter on the result; `overwrite` for a plain `PUT` |

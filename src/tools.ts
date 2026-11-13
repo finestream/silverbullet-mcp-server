@@ -25,6 +25,15 @@ import { NEVER_WRITTEN_TYPES, type Config } from "./config.ts";
 import type { Log } from "./log.ts";
 import { matchAll, MatchTimeout, type MatchItem } from "./match.ts";
 
+/** A revision as the tools show it: SilverBullet's ETag without its quotation marks (`sha256:<hex>`); a weak ETag is left as it is. */
+export const revisionOf = (etag: string | null): string | null => (etag === null || etag.startsWith("W/") ? etag : etag.replace(/^"(.*)"$/, "$1"));
+
+/** Whether a revision a caller gave, with or without the quotation marks, is the strong ETag the file is at. */
+export const sameRevision = (etag: string | null, given: string): boolean => {
+  const current = revisionOf(etag);
+  return current !== null && !current.startsWith("W/") && current === revisionOf(given.trim());
+};
+
 export type Context = {
   user: Credential;
   sb: SilverBullet;
@@ -402,12 +411,12 @@ export function registerTools(server: McpServer, ctx: Context) {
       const isText = file.endsWith(".md") || TEXT_TYPES.test(r.contentType);
       if (!isText) {
         const data = r.body.toString("base64");
-        return result({ space: s, filename: file, revision: r.etag, contentType: r.contentType, encoding: "base64", content: data, totalBytes: r.body.length }, `${file}: ${r.body.length} bytes of ${r.contentType}, base64 in structuredContent.content`);
+        return result({ space: s, filename: file, revision: revisionOf(r.etag), contentType: r.contentType, encoding: "base64", content: data, totalBytes: r.body.length }, `${file}: ${r.body.length} bytes of ${r.contentType}, base64 in structuredContent.content`);
       }
       const full = r.body.toString("utf8");
       const content = full.slice(offset, offset + limit);
       const nextOffset = offset + content.length < full.length ? offset + content.length : null;
-      return result({ space: s, filename: file, content, revision: r.etag, offset, totalCharacters: full.length, nextOffset }, content + (nextOffset !== null ? `\n[Truncated; continue with offset=${nextOffset}]` : ""));
+      return result({ space: s, filename: file, content, revision: revisionOf(r.etag), offset, totalCharacters: full.length, nextOffset }, content + (nextOffset !== null ? `\n[Truncated; continue with offset=${nextOffset}]` : ""));
     }),
   );
 
@@ -438,7 +447,7 @@ export function registerTools(server: McpServer, ctx: Context) {
         try {
           need(s, file, "r");
           const r = await readText(s, file);
-          notes.push({ filename: file, revision: r.etag, content: r.text.slice(0, contentLimit), truncated: r.text.length > contentLimit, totalCharacters: r.text.length });
+          notes.push({ filename: file, revision: revisionOf(r.etag), content: r.text.slice(0, contentLimit), truncated: r.text.length > contentLimit, totalCharacters: r.text.length });
         } catch (e) {
           notes.push({ filename: file, error: e instanceof SbError ? sbFailure(e) : (e as Error).message });
         }
@@ -551,7 +560,7 @@ export function registerTools(server: McpServer, ctx: Context) {
         throw e;
       });
       written(s, file);
-      return result({ space: s, filename: file, revision: r.etag, overwrite }, `Created ${s}/${file} (revision ${r.etag})`);
+      return result({ space: s, filename: file, revision: revisionOf(r.etag), overwrite }, `Created ${s}/${file} (revision ${revisionOf(r.etag)})`);
     }),
   );
 
@@ -559,7 +568,7 @@ export function registerTools(server: McpServer, ctx: Context) {
     "edit-note",
     {
       title: "Edit note",
-      description: "Apply exact, case-sensitive edits to a page as one conditional write. expectedRevision is the revision read-note returned; a stale revision is rejected. dryRun returns the diff without writing.",
+      description: "Apply exact, case-sensitive edits to a page as one conditional write. expectedRevision is the revision read-note, create-note or edit-note returned (`sha256:<hex>`; the quotation marks of an ETag are accepted); a stale revision is rejected. dryRun returns the diff without writing.",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       inputSchema: {
         space,
@@ -589,8 +598,9 @@ export function registerTools(server: McpServer, ctx: Context) {
       need(s, file, "r", "w");
       checkFileType(file);
       const original = await readText(s, file);
-      if (original.etag !== expectedRevision) {
-        throw new Refusal("revision", `Revision conflict: ${file} is at ${original.etag}, not ${expectedRevision}. Read it again before editing. Nothing was written.`);
+      if (!original.etag || original.etag.startsWith("W/")) throw new Refusal("revision", "SilverBullet returned no strong revision; conditional editing is unavailable. Nothing was written.");
+      if (!sameRevision(original.etag, expectedRevision)) {
+        throw new Refusal("revision", `Revision conflict: ${file} is at ${revisionOf(original.etag)}, not ${revisionOf(expectedRevision.trim())}. Read it again before editing. Nothing was written.`);
       }
       let prepared: { content: string; counts: number[] };
       try {
@@ -602,17 +612,16 @@ export function registerTools(server: McpServer, ctx: Context) {
       if (prepared.content.length > PAGE_LIMIT) throw new Refusal("input", `The page would be longer than ${PAGE_LIMIT} characters. Nothing was written.`);
       if (changed) await checkContent(s, file, prepared.content);
       const { diff, truncated } = diffOf(file, original.text, prepared.content);
-      let revision: string | null = original.etag;
+      let revision: string | null = revisionOf(original.etag);
       if (!dryRun && changed) {
-        if (!original.etag || original.etag.startsWith("W/")) throw new Refusal("revision", "SilverBullet returned no strong revision; conditional editing is unavailable. Nothing was written.");
         const w = await sb.write(token, s, file, prepared.content, { ifMatch: original.etag }).catch((e) => {
           if (e instanceof SbError && e.status === 412) throw new Refusal("revision", `Revision conflict: ${file} changed while editing. Read it again. Nothing was written.`);
           throw e;
         });
-        revision = w.etag;
+        revision = revisionOf(w.etag);
         written(s, file);
       }
-      const data = { space: s, filename: file, dryRun, changed, applied: !dryRun && changed, replacements: prepared.counts, previousRevision: original.etag, revision, diff, diffTruncated: truncated };
+      const data = { space: s, filename: file, dryRun, changed, applied: !dryRun && changed, replacements: prepared.counts, previousRevision: revisionOf(original.etag), revision, diff, diffTruncated: truncated };
       return result(data, `${dryRun ? "Preview" : changed ? "Edited" : "Unchanged"}: ${s}/${file}${!dryRun && changed ? ` (revision ${revision})` : ""}\n${diff}${truncated ? "\n[Diff truncated]" : ""}`);
     }),
   );
@@ -621,7 +630,7 @@ export function registerTools(server: McpServer, ctx: Context) {
     "delete-note",
     {
       title: "Delete note",
-      description: "Delete a file. Needs the d right; with expectedRevision the delete is conditional.",
+      description: "Delete a file. Needs the d right; with expectedRevision the delete is conditional (a revision is `sha256:<hex>`, as read-note returns it; the quotation marks of an ETag are accepted).",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         space,
@@ -635,8 +644,10 @@ export function registerTools(server: McpServer, ctx: Context) {
       const file = normalizeName(filename);
       notReportPage(file);
       need(s, file, "d");
-      await sb.delete(token, s, file, expectedRevision ? { ifMatch: expectedRevision } : {}).catch((e) => {
-        if (e instanceof SbError && e.status === 412) throw new Refusal("revision", `Revision conflict: ${file} is not at ${expectedRevision}. Read it again. Nothing was deleted.`);
+      const given = expectedRevision === undefined ? undefined : revisionOf(expectedRevision.trim());
+      if (given !== undefined && (!given || given.startsWith("W/"))) throw new Refusal("revision", `Revision conflict: ${file} is not at ${given || "an empty revision"}; a revision is sha256:<hex> as read-note returns it. Nothing was deleted.`);
+      await sb.delete(token, s, file, given ? { ifMatch: `"${given}"` } : {}).catch((e) => {
+        if (e instanceof SbError && e.status === 412) throw new Refusal("revision", `Revision conflict: ${file} is not at ${given}. Read it again. Nothing was deleted.`);
         throw e;
       });
       written(s, file, true);

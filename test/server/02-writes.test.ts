@@ -78,7 +78,7 @@ test("write filter: a clean page with queries, templates and a footer is accepte
   ].join("\n");
   const r = await alice.call("create-note", { filename: name, content });
   assert.equal(r.isError, false, r.text);
-  assert.match(r.data!.revision, /^"sha256:/);
+  assert.match(r.data!.revision, /^sha256:[0-9a-f]+$/, "a revision comes without the quotation marks of the ETag");
   const back = await alice.call("read-note", { filename: name });
   assert.equal(back.data!.content, content);
 });
@@ -128,6 +128,33 @@ test("file types: .md and the configured .csv are written; .png is refused; .htm
     assert.match(r.text, /^Refused by the file-type rule: ".*" files are executed or served as code/, f);
   }
   assert.ok(server.logs.some((l) => l.includes("config.relaxed") && l.includes(".csv")), "an extra file type is reported as a relaxed setting");
+});
+
+test("edit-note: the revision as create-note and read-note return it is accepted, with or without quotation marks", async () => {
+  const name = track(unique("Projects/Revisions"));
+  const created = await alice.call("create-note", { filename: name, content: "one two three\n" });
+  assert.equal(created.isError, false, created.text);
+  const fromCreate = created.data!.revision as string;
+  assert.match(fromCreate, /^sha256:/);
+
+  const first = await alice.call("edit-note", { filename: name, expectedRevision: fromCreate, edits: [{ oldText: "one", newText: "1" }] });
+  assert.equal(first.isError, false, first.text);
+  assert.equal(first.data!.previousRevision, fromCreate);
+
+  const read = await alice.call("read-note", { filename: name });
+  const fromRead = read.data!.revision as string;
+  assert.equal(fromRead, first.data!.revision);
+  assert.match(fromRead, /^sha256:/);
+  const second = await alice.call("edit-note", { filename: name, expectedRevision: fromRead, edits: [{ oldText: "two", newText: "2" }] });
+  assert.equal(second.isError, false, second.text);
+
+  const quoted = await alice.call("edit-note", { filename: name, expectedRevision: `"${second.data!.revision}"`, edits: [{ oldText: "three", newText: "3" }] });
+  assert.equal(quoted.isError, false, quoted.text);
+  assert.equal((await sb.read(T.alice, "alpha", `${name}.md`)).text, "1 2 3\n");
+
+  const stale = await alice.call("edit-note", { filename: name, expectedRevision: fromCreate, edits: [{ oldText: "3", newText: "x" }] });
+  assert.equal(stale.isError, true);
+  assert.match(stale.text, /Revision conflict/);
 });
 
 test("edit-note: a stale revision is rejected; dryRun returns the diff and writes nothing; a fresh revision writes", async () => {
