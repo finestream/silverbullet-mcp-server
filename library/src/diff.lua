@@ -309,6 +309,10 @@ end
 -- address is remote replaced by a note with its address. SilverBullet's
 -- renderer requests such an image while it renders, before anything
 -- of its result can be sanitized; an image in HTML, it does not.
+-- Reference-style images (![x][r], ![r][], ![r]) and a transclusion of
+-- an address (![[https://...]]) need no handling: the renderer knows no
+-- reference definitions and shows such a transclusion as a failed image,
+-- so it requests neither (pinned by a test).
 -----------------------------------------------------------------------
 function proposals.withoutRemoteImages(text)
 	local ranges = {}

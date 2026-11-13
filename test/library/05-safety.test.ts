@@ -204,6 +204,38 @@ return {
   assert.deepEqual(r.controls, [true, true, true, false, false]);
 });
 
+test("safety: the formatted view requests nothing for reference-style images or a transclusion of an address: the renderer does not turn them into images", async () => {
+  // probed against the renderer: it knows no reference definitions and shows a remote ![[...]] as a failed image, so none of these is requested
+  const r = await lua<Record<string, unknown>>(`js.window.performance.clearResourceTimings()
+local base = js.window.location.origin .. "/.fs/probe-" .. tostring(math.random(1, 1000000000))
+local forms = {
+  "![x][r]\\n\\n[r]: " .. base .. "-1.png",
+  "![r][]\\n\\n[r]: " .. base .. "-2.png",
+  "![r]\\n\\n[r]: " .. base .. "-3.png",
+  "![x][r]\\n\\n[r]: <" .. base .. "-4.png> \\"title\\"",
+  "![[" .. base .. "-5.png]]",
+  "![[" .. base .. "-6.png|200x100]]",
+  "![[//example.invalid/-7.png]]",
+}
+local images, notes = 0, {}
+for _, form in ipairs(forms) do
+  local block = proposals.markdownBlock(form, "")
+  images = images + block.querySelectorAll("img").length
+  table.insert(notes, block.textContent)
+end
+return { base = base, images = images, notes = notes }`);
+  await sleep(1500);
+  const base = String(r.base);
+  let requests = 0;
+  for (let n = 1; n <= 7; n++) {
+    requests += Number(await lua(`return js.window.performance.getEntriesByName(${JSON.stringify(`${base}-${n}.png`)}).length`));
+  }
+  assert.equal(requests, 0, "none of the forms was requested");
+  assert.equal(await lua(`local n = 0 local e = js.window.performance.getEntriesByType("resource") for i = 1, e.length do if string.find(e[i].name, "example.invalid", 1, true) then n = n + 1 end end return n`), 0);
+  assert.equal(r.images, 0, "none of the forms leaves an image");
+  assert.match(String(r.notes), /\[r\]: \S+-1\.png/, "the reference definition stays visible as text");
+});
+
 test("safety: a page outside the proposal folder is no proposal: no Reject, not listed, not applied", async () => {
   assert.match(await open("review:T/Victim", ".proposals-notice"), /not a page in the proposal folder/);
   const labels = await lua<string[]>(`local out = {}
