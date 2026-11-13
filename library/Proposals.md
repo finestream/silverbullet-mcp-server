@@ -4,7 +4,7 @@ tags: meta/library
 author: finestream
 description: "Review change proposals made through the SilverBullet MCP server: a list, a diff per proposal, and Apply, Edit and Reject with your own rights."
 pageDecoration.prefix: "📝 "
-version: "0.7.0"
+version: "0.8.0"
 proposalFormat: 1
 ---
 > **note**
@@ -94,7 +94,7 @@ The first lists every open proposal, the second only those for one page (put it 
 -----------------------------------------------------------------------
 proposals = proposals or {}
 
-proposals.version = "0.7.0"
+proposals.version = "0.8.0"
 proposals.format = 1
 proposals.tag = "change-proposal"
 
