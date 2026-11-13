@@ -123,6 +123,7 @@ test("redaction: the inventory finds the stylesheet, the font face, the backgrou
 });
 
 test("redaction: removing a @font-face rule drops the face from document.fonts; a placeholder replaces a cached image and a background, and stays through a settle; undo restores all", async () => {
+  await lua(UNDO_SCRIPT); // a check that failed before its own undo must not leave its redactions to this one
   await show(PAGE);
   const fonts = () => inPage(`[...document.fonts].filter((f) => f.family.includes("SbmcpCheck")).length`);
   assert.notEqual(await fonts(), "0", "the face is in document.fonts");
@@ -142,6 +143,7 @@ test("redaction: removing a @font-face rule drops the face from document.fonts; 
 });
 
 test("redaction: a disabled #custom-styles sheet takes its imports, fonts and backgrounds with it, and stays disabled through a navigation; undo enables it", async () => {
+  await lua(UNDO_SCRIPT); // a check that failed before its own undo must not leave its redactions to this one
   await show(PAGE);
   const outline = () => inPage(`getComputedStyle(document.getElementById("sb-main")).outlineColor`);
   assert.equal(await outline(), "rgb(1, 2, 3)", "the imported sheet applies");
