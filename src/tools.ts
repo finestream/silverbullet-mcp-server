@@ -23,7 +23,7 @@ import { diffOf, prepareEdits, type Edit } from "./edit.ts";
 import { formatProposal, outsideProposalFolders, type Proposal } from "./proposal.ts";
 import { RuntimeError, SbError, SilverBullet, type SbFile } from "./sb.ts";
 import type { State } from "./state.ts";
-import { judgeLoads, RenderTimeout, type Loads, type Renderer } from "./render.ts";
+import { judgeLoads, judgeScreen, RenderTimeout, type Loads, type Renderer, type VerifyScreen } from "./render.ts";
 import { NEVER_WRITTEN_TYPES, type Config } from "./config.ts";
 import type { Log } from "./log.ts";
 import { matchAll, MatchTimeout, type MatchItem } from "./match.ts";
@@ -849,8 +849,9 @@ export function registerTools(server: McpServer, ctx: Context) {
    * The render check (docs/security.md, section 12): what the render loaded, judged against the
    * caller's `r` rights before anything is returned. Fails closed when the loads cannot be trusted.
    */
-  const verifyLoads = (space: string, file: string) => (loads: Loads) => {
-    const { blind, denied } = judgeLoads(loads, file, (f) => rightsOn(space, f).has("r"));
+  const verifyLoads = (space: string, file: string) => (loads: Loads) => refuseLoads(space, judgeLoads(loads, file, (f) => rightsOn(space, f).has("r")));
+
+  const refuseLoads = (space: string, { blind, denied }: { blind: string | null; denied: string[] }) => {
     if (blind) {
       throw new Refusal("render-check", `Refused by the render check: cannot verify what the render loaded (${blind}). Nothing was returned. SilverBullet's client may have changed how it reads pages; operator: see docs/security.md, section 12, and the release checks.`);
     }
@@ -860,7 +861,26 @@ export function registerTools(server: McpServer, ctx: Context) {
     }
   };
 
-  const RENDER_RULES = "Needs the x right; pages (.md) only; refused while the scan has findings in the space. For reading only: it returns no revision; edits are always based on read-note's source and its revision. The first call starts a headless browser for this user and space inside SilverBullet (about 200 MiB, kept until SilverBullet restarts), later calls are fast. Runs with the user's full SilverBullet rights; the result is refused when the render loaded a page or file (a transclusion, an image) the user has no r on in the access list. Query results come from SilverBullet's index and are not checked.";
+  /**
+   * The render check of a screenshot: as above, except that denied fonts, stylesheets and images
+   * the shown page uses are returned for redaction; on the last look, anything left to redact refuses.
+   */
+  const verifyScreen =
+    (space: string, file: string): VerifyScreen =>
+    (seen, last) => {
+      const j = judgeScreen(seen, file, (f) => rightsOn(space, f).has("r"));
+      refuseLoads(space, j);
+      const left = [...j.redact.font, ...j.redact.style, ...j.redact.image];
+      if (last && left.length) {
+        const list = left.map((f) => `${space}/${pageNameOf(f)}`).join(", ");
+        throw new Refusal("render-check", `Refused by the render check: the screenshot still shows what its reader may not read after the redaction (${list}). Nothing was returned (docs/security.md, section 12).`);
+      }
+      return j.redact;
+    };
+
+  const RENDER_COMMON = "Needs the x right; pages (.md) only; refused while the scan has findings in the space. For reading only: it returns no revision; edits are always based on read-note's source and its revision. The first call starts a headless browser for this user and space inside SilverBullet (about 200 MiB, kept until SilverBullet restarts), later calls are fast. Runs with the user's full SilverBullet rights;";
+  const RENDER_RULES = `${RENDER_COMMON} the result is refused when the render loaded a page or file (a transclusion, an image) the user has no r on in the access list. Query results come from SilverBullet's index and are not checked.`;
+  const SCREENSHOT_RULES = `${RENDER_COMMON} the result is refused when the page shows a page or other file (a transclusion) the user has no r on in the access list. A font, stylesheet or image the user has no r on is left out instead, with a warning: a substitute font, SilverBullet's default theme (space styles off) or a placeholder image. Query results come from SilverBullet's index and are not checked.`;
 
   server.registerTool(
     "render-note",
@@ -885,7 +905,7 @@ export function registerTools(server: McpServer, ctx: Context) {
     "screenshot-note",
     {
       title: "Screenshot note",
-      description: `A PNG of a page as SilverBullet shows it in its editor, taken by SilverBullet's Runtime API as this user. selector clips the image to the first matching element (for example #sb-editor); fullPage asks for the whole page where the instance supports it (SilverBullet 2.12.1 ignores it). ${RENDER_RULES}`,
+      description: `A PNG of a page as SilverBullet shows it in its editor, taken by SilverBullet's Runtime API as this user. selector clips the image to the first matching element (for example #sb-editor); fullPage asks for the whole page where the instance supports it (SilverBullet 2.12.1 ignores it). ${SCREENSHOT_RULES}`,
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {
         space,
@@ -896,8 +916,8 @@ export function registerTools(server: McpServer, ctx: Context) {
     },
     tool("screenshot-note", async ({ space: sp, filename, selector, fullPage }) => {
       const { s, file, page } = await renderable(sp, filename);
-      const r = await renderer.screenshot(user, s, page, { selector, fullPage }, verifyLoads(s, file));
-      const data = { space: s, filename: file, mimeType: "image/png", bytes: r.png.length, width: r.width, height: r.height, selector: selector ?? null, fullPage, loaded: r.loaded, warnings: r.warnings, queuedMs: r.queuedMs, indexWaitMs: r.indexWaitMs, rebooted: r.rebooted };
+      const r = await renderer.screenshot(user, s, page, { selector, fullPage }, verifyScreen(s, file));
+      const data = { space: s, filename: file, mimeType: "image/png", bytes: r.png.length, width: r.width, height: r.height, selector: selector ?? null, fullPage, loaded: r.loaded, redacted: r.redacted, warnings: r.warnings, queuedMs: r.queuedMs, indexWaitMs: r.indexWaitMs, rebooted: r.rebooted };
       return {
         content: [
           { type: "text", text: `Screenshot of ${s}/${page}: ${r.width}x${r.height} PNG, ${r.png.length} bytes${selector ? `, clipped to ${selector}` : ""}${r.warnings.length ? `\n[Warning: ${r.warnings.join(" ")}]` : ""}` },
