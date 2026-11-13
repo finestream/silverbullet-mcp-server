@@ -305,19 +305,21 @@ end
 -----------------------------------------------------------------------
 -- proposals.withoutRemoteImages(text)
 --
--- The markdown with every image of the form ![alt](address) whose
--- address is remote replaced by a note with its address. SilverBullet's
--- renderer requests such an image while it renders, before anything
--- of its result can be sanitized; an image in HTML, it does not.
--- Reference-style images (![x][r], ![r][], ![r]) and a transclusion of
--- an address (![[https://...]]) need no handling: the renderer knows no
--- reference definitions and shows such a transclusion as a failed image,
--- so it requests neither (pinned by a test).
+-- The markdown with every image of the form ![alt](address) and every
+-- reference definition [label]: address whose address is remote
+-- replaced by a note with its address. SilverBullet's renderer requests
+-- such an image while it renders, before anything of its result can be
+-- sanitized; an image in HTML, it does not. A reference-style image
+-- (![x][r], ![r][], ![r]) is no image to the renderer, and a
+-- transclusion of an address (![[https://...]]) it shows as an error
+-- text without an img element, so it requests neither (pinned by a
+-- test). Replacing the definitions is a second layer, should a renderer
+-- resolve them.
 -----------------------------------------------------------------------
 function proposals.withoutRemoteImages(text)
 	local ranges = {}
 	local function walk(node)
-		if node.type == "Image" then
+		if node.type == "Image" or node.type == "LinkReference" then
 			for _, child in ipairs(node.children or {}) do
 				if child.type == "URL" then
 					local address = string.sub(text, child.from + 1, child.to)

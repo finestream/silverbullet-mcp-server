@@ -68,7 +68,7 @@ The first lists every open proposal, the second only those for one page (put it 
 * **The bar above a working copy is a view** docked at the top of the page (*Change proposal*). If you close it, the review page of the proposal still offers the same actions.
 * **Every button acts on what you were shown.** *Apply*, *Edit*, *Accept* and *Revert to proposal* refuse, and the review is drawn again, when the proposal page, its target or the working copy changed since the review (or the bar) was drawn; *Apply all* and *Apply group* apply each proposal only as the list showed it.
 * **A proposal must carry the revision of its target**, and its target (and, for a move, the new name) must lie outside the proposal folder and the folder of the working copies. A page that breaks either rule cannot be reviewed or applied, only rejected.
-* **Nothing runs before you apply.** Everything the agent wrote, the reason included, is inside a fenced block on the proposal page. The formatted view is rendered by SilverBullet's own Markdown renderer, which shows `${...}` as text and drops scripts and event handlers; the library then removes styles, classes, style sheets, embedded documents, media and forms, and replaces remote images with their address, so nothing in a proposal can cover the change or load from elsewhere. Remote images are taken out of the Markdown before it is rendered, and the rendered HTML is sanitized in a document of its own, so no such image is requested at any point. When the page holds HTML, the review opens on the text view, which is plain text.
+* **Nothing runs before you apply.** Everything the agent wrote, the reason included, is inside a fenced block on the proposal page. The formatted view is rendered by SilverBullet's own Markdown renderer, which shows `${...}` as text and drops scripts and event handlers; the library then removes styles, classes, style sheets, embedded documents, media and forms, and replaces remote images with their address, so nothing in a proposal can cover the change or load from elsewhere. Remote images and the reference definitions of remote addresses are taken out of the Markdown before it is rendered, and the rendered HTML is sanitized in a document of its own, so no such image is requested at any point. When the page holds HTML, the review opens on the text view, which is plain text.
 * **The format of a proposal page is internal** to the server and this library and may change with any release; proposals are made with the server's tools, not by hand. The server and the library are released together, and this page's frontmatter carries the version and the format number.
 * **The diff** is computed by [jsdiff](https://github.com/kpdecker/jsdiff) (BSD-3-Clause), which is part of the library: nothing is loaded from the network.
 
@@ -1260,19 +1260,21 @@ end
 -----------------------------------------------------------------------
 -- proposals.withoutRemoteImages(text)
 --
--- The markdown with every image of the form ![alt](address) whose
--- address is remote replaced by a note with its address. SilverBullet's
--- renderer requests such an image while it renders, before anything
--- of its result can be sanitized; an image in HTML, it does not.
--- Reference-style images (![x][r], ![r][], ![r]) and a transclusion of
--- an address (![[https://...]]) need no handling: the renderer knows no
--- reference definitions and shows such a transclusion as a failed image,
--- so it requests neither (pinned by a test).
+-- The markdown with every image of the form ![alt](address) and every
+-- reference definition [label]: address whose address is remote
+-- replaced by a note with its address. SilverBullet's renderer requests
+-- such an image while it renders, before anything of its result can be
+-- sanitized; an image in HTML, it does not. A reference-style image
+-- (![x][r], ![r][], ![r]) is no image to the renderer, and a
+-- transclusion of an address (![[https://...]]) it shows as an error
+-- text without an img element, so it requests neither (pinned by a
+-- test). Replacing the definitions is a second layer, should a renderer
+-- resolve them.
 -----------------------------------------------------------------------
 function proposals.withoutRemoteImages(text)
 	local ranges = {}
 	local function walk(node)
-		if node.type == "Image" then
+		if node.type == "Image" or node.type == "LinkReference" then
 			for _, child in ipairs(node.children or {}) do
 				if child.type == "URL" then
 					local address = string.sub(text, child.from + 1, child.to)

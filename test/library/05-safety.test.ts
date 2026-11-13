@@ -204,10 +204,11 @@ return {
   assert.deepEqual(r.controls, [true, true, true, false, false]);
 });
 
-test("safety: the formatted view requests nothing for reference-style images or a transclusion of an address: the renderer does not turn them into images", async () => {
-  // probed against the renderer: it knows no reference definitions and shows a remote ![[...]] as a failed image, so none of these is requested
+test("safety: the renderer requests nothing for reference-style images or a transclusion of an address, and the formatted view shows their addresses as notes", async () => {
+  // probed against the renderer: it knows no reference definitions and shows a remote ![[...]] as an error text, with no img element
   const r = await lua<Record<string, unknown>>(`js.window.performance.clearResourceTimings()
-local base = js.window.location.origin .. "/.fs/probe-" .. tostring(math.random(1, 1000000000))
+local token = "probe-" .. tostring(math.random(1, 1000000000))
+local base = js.window.location.origin .. "/.fs/" .. token
 local forms = {
   "![x][r]\\n\\n[r]: " .. base .. "-1.png",
   "![r][]\\n\\n[r]: " .. base .. "-2.png",
@@ -215,25 +216,34 @@ local forms = {
   "![x][r]\\n\\n[r]: <" .. base .. "-4.png> \\"title\\"",
   "![[" .. base .. "-5.png]]",
   "![[" .. base .. "-6.png|200x100]]",
-  "![[//example.invalid/-7.png]]",
+  "![[" .. js.window.location.origin:gsub("^https?:", "") .. "/.fs/" .. token .. "-7.png]]",
 }
-local images, notes = 0, {}
+local doc = js.window.document.implementation.createHTMLDocument("")
+local raw, piped = {}, {}
 for _, form in ipairs(forms) do
-  local block = proposals.markdownBlock(form, "")
-  images = images + block.querySelectorAll("img").length
-  table.insert(notes, block.textContent)
+  -- the renderer alone, then the formatted view
+  local holder = doc.createElement("div")
+  holder.innerHTML = markdown.markdownToHtml(form)
+  table.insert(raw, { images = holder.querySelectorAll("img").length, text = holder.textContent })
+  table.insert(piped, proposals.markdownBlock(form, "").textContent)
 end
-return { base = base, images = images, notes = notes }`);
+return { token = token, base = base, raw = raw, piped = piped }`);
   await sleep(1500);
-  const base = String(r.base);
-  let requests = 0;
-  for (let n = 1; n <= 7; n++) {
-    requests += Number(await lua(`return js.window.performance.getEntriesByName(${JSON.stringify(`${base}-${n}.png`)}).length`));
+  const token = String(r.token);
+  const requested = await lua<number>(`local n = 0
+local e = js.window.performance.getEntriesByType("resource")
+for i = 1, e.length do if string.find(e[i].name, ${JSON.stringify(token)}, 1, true) then n = n + 1 end end
+return n`);
+  assert.equal(requested, 0, "no form was requested, by the renderer or by the formatted view");
+  const raw = r.raw as Array<{ images: number; text: string }>;
+  const piped = r.piped as string[];
+  raw.forEach((form, n) => {
+    assert.equal(form.images, 0, `form ${n + 1}: the renderer emits no img element`);
+    assert.doesNotMatch(form.text, /remote image not loaded/, `form ${n + 1}: nothing of this came from the sanitizer`);
+  });
+  for (let n = 0; n < 4; n++) {
+    assert.ok(piped[n].includes(`${token}-${n + 1}.png`), `form ${n + 1}: the address of the reference definition stays visible`);
   }
-  assert.equal(requests, 0, "none of the forms was requested");
-  assert.equal(await lua(`local n = 0 local e = js.window.performance.getEntriesByType("resource") for i = 1, e.length do if string.find(e[i].name, "example.invalid", 1, true) then n = n + 1 end end return n`), 0);
-  assert.equal(r.images, 0, "none of the forms leaves an image");
-  assert.match(String(r.notes), /\[r\]: \S+-1\.png/, "the reference definition stays visible as text");
 });
 
 test("safety: a page outside the proposal folder is no proposal: no Reject, not listed, not applied", async () => {
