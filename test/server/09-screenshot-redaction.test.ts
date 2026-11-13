@@ -108,19 +108,26 @@ const page = async (body: string) => {
 };
 const inRuntime = async (js: string) => String((await sb.lua(T.alice, "gamma", `return tostring(js.window.eval(${JSON.stringify(js)}))`)).result);
 
-/** Writes the theme and boots a fresh runtime, which loads the space styles; waits until they are in the document. */
-async function theme(style: string) {
-  await write(THEME, "# Redaction test theme\n\n```space-style\n" + style + "\n/* sbmcp-redact-theme */\n```\n");
-  // SilverBullet's reset was seen to fail ("remove browser profile: Directory not empty") and leave the runtime unavailable until the next reset.
+/**
+ * Resets the runtimes and waits for alice's in gamma. SilverBullet's reset was seen to fail ("remove browser
+ * profile: Directory not empty") and leave the runtime unavailable until the next reset.
+ */
+async function freshRuntime() {
   for (let attempt = 1; ; attempt++) {
     await sb.admin.resetRuntimes(T.admin);
     try {
       await sb.runtimeReady(T.alice, "gamma", 45000);
-      break;
+      return;
     } catch (e) {
       if (attempt === 3) throw e;
     }
   }
+}
+
+/** Writes the theme and boots a fresh runtime, which loads the space styles; waits until they are in the document. */
+async function theme(style: string) {
+  await write(THEME, "# Redaction test theme\n\n```space-style\n" + style + "\n/* sbmcp-redact-theme */\n```\n");
+  await freshRuntime();
   const until = Date.now() + 30000;
   for (;;) {
     if ((await inRuntime(`document.getElementById("custom-styles")?.innerHTML ?? ""`)).includes(style.slice(0, 40))) return;
@@ -145,7 +152,8 @@ after(async () => {
   await alice?.close();
   await server?.stop();
   for (const f of files.reverse()) await sb.remove(T.admin, "gamma", f);
-  await sb.admin.resetRuntimes(T.admin);
+  // Also so that the next test file does not find a runtime the reset left unavailable.
+  await freshRuntime();
 });
 
 const shot = async (name: string) => {
@@ -186,6 +194,16 @@ test("redaction: a denied image in the page and a denied font and background of 
   assert.match(restored, /mark\.png/, `the background is back in the runtime: ${restored}`);
   assert.doesNotMatch(restored, /true/, `no space style left disabled: ${restored}`);
   assert.match(await inRuntime(`[...document.styleSheets].flatMap((s) => [...s.cssRules]).filter((r) => r instanceof CSSFontFaceRule).map((r) => r.cssText).join(" ")`), /face\.woff2/, "the font face is back");
+});
+
+test("redaction: a denied image whose name is outside Latin-1 is matched in the client and replaced, not refused", async () => {
+  await theme("/* no assets */");
+  const file = `${DIR}/Märk-ő€.png`;
+  await write(file, markerPng());
+  const name = await page(`# Unicode\n\n![denied](/${DIR}/Märk-ő€.png)\n`);
+  const r = await shot(name);
+  assert.equal(markerPixels(r.png), 0, "the denied picture does not appear");
+  assert.deepEqual(r.data!.redacted, { font: [], style: [], image: [file] });
 });
 
 test("redaction: a denied stylesheet turns the space styles off for the screenshot, with a warning; they are on again afterwards", async () => {

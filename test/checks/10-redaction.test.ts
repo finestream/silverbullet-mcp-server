@@ -84,7 +84,8 @@ before(async () => {
 after(async () => {
   await lua(UNDO_SCRIPT).catch(() => {});
   for (const f of files) await sb.remove(T.admin, S.gamma, f);
-  await sb.admin.resetRuntimes(T.admin);
+  // Also so that the next check file does not find a runtime the reset left unavailable.
+  await freshRuntime();
 });
 
 test("redaction: space styles are <style> elements in #custom-styles; the document fetches their imports, fonts and backgrounds as \"css\", an image of the page as \"img\"; the inventory tells the page's own read from what is presented", async () => {
@@ -170,4 +171,18 @@ test("redaction: Chrome serialises the strings of image-set() as url(), so url()
 test("[watch] redaction: SilverBullet's Lua parser rejects a level-1 long-bracket string that holds ]]] and a later ]] (the server sends its client script base64-encoded)", async () => {
   const r = await sb.lua(T.alice, S.gamma, "local x = [=[\n[[a]]]; [[b]]\n]=]\nreturn 1");
   assert.ok(r.error, `the parser now accepts it: ${r.raw}`);
+});
+
+test("redaction: the client attaches no closed shadow root and draws no canvas while it shows pages (the inventory sees neither; a canvas makes the check blind)", async () => {
+  await show(BLANK);
+  await inPage(`(() => { const orig = Element.prototype.attachShadow; window.__sbmcpShadow = { open: 0, closed: 0 }; Element.prototype.attachShadow = function (init) { window.__sbmcpShadow[init && init.mode === "closed" ? "closed" : "open"]++; return orig.call(this, init); }; window.__sbmcpShadowOrig = orig; return true; })()`);
+  try {
+    for (const page of [PAGE, "Rendered", "index", PAGE]) await show(page);
+    const counts = JSON.parse(await inPage(`JSON.stringify(window.__sbmcpShadow)`)) as { open: number; closed: number };
+    assert.equal(counts.closed, 0, `closed shadow roots attached: ${counts.closed}`);
+    assert.equal(await inPage(`String(document.querySelectorAll("canvas").length)`), "0", "a canvas in the shown page");
+    assert.equal(await inPage(`[...document.querySelectorAll("*")].filter((e) => e.localName.includes("-") && customElements.get(e.localName)).map((e) => e.localName).join(",")`), "", "custom elements, which may hold a closed shadow root attached before the patch");
+  } finally {
+    await inPage(`(() => { if (window.__sbmcpShadowOrig) Element.prototype.attachShadow = window.__sbmcpShadowOrig; return true; })()`);
+  }
 });

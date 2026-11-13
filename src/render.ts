@@ -151,11 +151,13 @@ export function assetKind(file: string): AssetKind | null {
  * the resource timing: an image the browser shows again from its memory cache leaves no new
  * timing entry (measured on 2.12.1). `via`: `sheet` (a stylesheet or an `@import`), `font` (an
  * `@font-face` source), `css` (a `url()` in a declaration or a `style` attribute), `element`
- * (an image of an element), `frame` (a frame, object or embed, or anything inside a frame).
+ * (an image the redaction replaces: `img`, `source`, a `video` poster, an image input, an SVG
+ * `image`), `fixed` (a use the redaction cannot reach: a frame, object or embed, `audio`, `track`,
+ * a `video` source, a `link` other than a stylesheet, and anything inside a frame or a shadow root).
  */
-export type Use = { path: string; via: "sheet" | "font" | "css" | "element" | "frame" };
-/** `blob`: a `blob:` URL is shown, whose source the server cannot tell. */
-export type Uses = { uses: Use[]; blob: boolean };
+export type Use = { path: string; via: "sheet" | "font" | "css" | "element" | "fixed" };
+/** `blob`: a `blob:` URL is shown, whose source the server cannot tell; `canvas`: the page has a canvas, whose drawing it cannot tell either. */
+export type Uses = { uses: Use[]; blob: boolean; canvas: boolean };
 export type Redactions = Record<AssetKind, string[]>;
 
 /** What one look at the shown page found: the cumulative resource timing, the uses, and what earlier rounds redacted. */
@@ -163,7 +165,7 @@ export type Seen = { loads: Loads; uses: Uses; redacted: ReadonlySet<string> };
 
 export type ScreenJudgement = {
   blind: string | null;
-  /** Denied files that cannot be redacted: pages and other files, and assets inside a frame or loaded but not found in the document. */
+  /** Denied files that cannot be redacted: pages and other files, assets the redaction cannot reach, and assets loaded but neither in use nor redacted. */
   denied: string[];
   /** Denied fonts, stylesheets and images the document uses, to be redacted. */
   redact: Redactions;
@@ -173,7 +175,9 @@ export type ScreenJudgement = {
  * Judges a screenshot. The resource timing says what was fetched since the navigation, the uses
  * what the document shows now. A denied asset the document fetched to show it (`presented`) must
  * either be in use (and is then redacted), or have been redacted; one that is neither shows
- * in a way the inventory cannot see, and refuses.
+ * in a way the inventory cannot see, and refuses. A denied asset loaded any other way (the
+ * client's own `fetch`) refuses, as every denied load does for `render-note`. Without the
+ * initiators the check is blind.
  */
 export function judgeScreen(seen: Seen, file: string, mayRead: (file: string) => boolean): ScreenJudgement {
   const { blind, denied: loaded } = judgeLoads(seen.loads, file, mayRead);
@@ -183,16 +187,21 @@ export function judgeScreen(seen: Seen, file: string, mayRead: (file: string) =>
   for (const u of seen.uses.uses) {
     if (u.path === file || mayRead(u.path)) continue;
     const kind = assetKind(u.path);
-    if (!kind || u.via === "frame") denied.add(u.path);
+    if (!kind || u.via === "fixed") denied.add(u.path);
     else if (!redact[kind].includes(u.path)) redact[kind].push(u.path);
     inUse.add(u.path);
   }
   const presented = new Set(seen.loads.presented ?? []);
   for (const f of loaded) {
-    if (!assetKind(f)) denied.add(f);
-    else if (presented.has(f) && !inUse.has(f) && !seen.redacted.has(f)) denied.add(f);
+    if (!assetKind(f) || !presented.has(f)) denied.add(f);
+    else if (!inUse.has(f) && !seen.redacted.has(f)) denied.add(f);
   }
-  return { blind: blind ?? (seen.uses.blob ? "the page shows a blob: URL, whose source cannot be told" : null), denied: [...denied], redact };
+  const why =
+    blind ??
+    (seen.loads.presented === undefined ? "the browser's resource timing gave no initiators, so what the page fetched to show it cannot be told" : null) ??
+    (seen.uses.blob ? "the page shows a blob: URL, whose source cannot be told" : null) ??
+    (seen.uses.canvas ? "the page shows a canvas, whose drawing cannot be told" : null);
+  return { blind: why, denied: [...denied], redact };
 }
 
 /**
@@ -241,14 +250,16 @@ const CLIENT_LIB = String.raw`const sbmcp = (() => {
   const allRules = (doc) => { const out = []; const seen = new Set(); for (const s of sheetsOf(doc)) rules(s, out, seen); return out; };
   const declarations = (style) => { const out = []; if (!style) return out; for (let i = 0; i < style.length; i++) { const p = style[i]; out.push({ p, v: style.getPropertyValue(p), prio: style.getPropertyPriority(p) }); } return out; };
   const srcset = (v) => String(v || "").split(",").map((c) => c.trim().split(/\s+/)[0]).filter(Boolean);
-  const IMAGE_ATTRS = [["img", ["src"], ["srcset"]], ["source", ["src"], ["srcset"]], ["video", ["poster", "src"], []], ["audio", ["src"], []], ["track", ["src"], []], ["input", ["src"], []], ["link", ["href"], []]];
-  const FRAME_ATTRS = [["iframe", "src"], ["frame", "src"], ["object", "data"], ["embed", "src"]];
+  // The elements whose images the redaction replaces, and those it cannot reach.
+  const IMAGE_ATTRS = [["img", ["src"], ["srcset"]], ["source", ["src"], ["srcset"]], ["video", ["poster"], []], ["input", ["src"], []]];
+  const FIXED_ATTRS = [["iframe", "src"], ["frame", "src"], ["object", "data"], ["embed", "src"], ["audio", "src"], ["track", "src"], ["video", "src"], ["link", "href"]];
   const svgHref = (el) => el.getAttribute("href") || el.getAttributeNS("http://www.w3.org/1999/xlink", "href");
 
-  function inventory(doc = document, frame = false) {
+  function inventory(doc = document, fixed = false) {
     const uses = [];
-    let blob = false;
-    const add = (href, via) => { if (!href) return; if (href.startsWith("blob:")) blob = true; else uses.push({ u: href, via: frame ? "frame" : via }); };
+    let blob = false, canvas = false;
+    const add = (href, via) => { if (!href) return; if (href.startsWith("blob:")) blob = true; else uses.push({ u: href, via: fixed ? "fixed" : via }); };
+    const inner = (root) => { const r = inventory(root, true); uses.push(...r.uses); blob = blob || r.blob; canvas = canvas || r.canvas; };
     for (const s of sheetsOf(doc)) if (!s.disabled && s.href) add(s.href, "sheet");
     for (const x of allRules(doc)) {
       if (x.opaque) { if (x.opaque.href) add(x.opaque.href, "sheet"); continue; }
@@ -260,19 +271,23 @@ const CLIENT_LIB = String.raw`const sbmcp = (() => {
     for (const el of doc.querySelectorAll("*")) {
       if (el.hasAttribute("style")) for (const d of declarations(el.style)) for (const u of urls(d.v, doc.baseURI)) add(u.href, "css");
       const tag = el.localName;
+      if (tag === "canvas") canvas = true;
       for (const [t, attrs, sets] of IMAGE_ATTRS) {
         if (tag !== t) continue;
-        if (t === "link" && /\bstylesheet\b/i.test(el.rel || "")) continue;
         for (const a of attrs) if (el.getAttribute(a)) add(abs(el.getAttribute(a), doc.baseURI), "element");
         for (const a of sets) for (const c of srcset(el.getAttribute(a))) add(abs(c, doc.baseURI), "element");
         if (t === "img" && el.currentSrc) add(el.currentSrc, "element");
       }
       if (el.namespaceURI === "http://www.w3.org/2000/svg" && svgHref(el)) add(abs(svgHref(el), doc.baseURI), "element");
-      for (const [t, a] of FRAME_ATTRS) if (tag === t && el.getAttribute(a)) add(abs(el.getAttribute(a), doc.baseURI), "frame");
-      if (el.shadowRoot) { const inner = inventory(el.shadowRoot, frame); uses.push(...inner.uses); blob = blob || inner.blob; }
-      if ((tag === "iframe" || tag === "frame") && el.contentDocument) { const inner = inventory(el.contentDocument, true); uses.push(...inner.uses); blob = blob || inner.blob; }
+      for (const [t, a] of FIXED_ATTRS) {
+        if (tag !== t || !el.getAttribute(a)) continue;
+        if (t === "link" && /\bstylesheet\b/i.test(el.rel || "")) continue;
+        add(abs(el.getAttribute(a), doc.baseURI), "fixed");
+      }
+      if (el.shadowRoot) inner(el.shadowRoot);
+      if ((tag === "iframe" || tag === "frame") && el.contentDocument) inner(el.contentDocument);
     }
-    return { uses, blob };
+    return { uses, blob, canvas };
   }
 
   /** denied: absolute paths ("/space/.fs/file") per kind. Returns the URLs redacted and those withdrawn with a sheet turned off. */
@@ -347,10 +362,9 @@ const CLIENT_LIB = String.raw`const sbmcp = (() => {
           else dropAttr(el, "src");
           acted.push(...bad);
         } else if (tag === "video" || tag === "input") {
-          for (const a of ["poster", "src"]) { const h = el.getAttribute(a) && abs(el.getAttribute(a), document.baseURI); if (hit(images, h)) { setAttr(el, a, PLACEHOLDER); acted.push(h); } }
-        } else if (tag === "link" && !/\bstylesheet\b/i.test(el.rel || "")) {
-          const h = abs(el.getAttribute("href") || "", document.baseURI);
-          if (hit(images, h)) { setAttr(el, "href", PLACEHOLDER); acted.push(h); }
+          const a = tag === "video" ? "poster" : "src";
+          const h = el.getAttribute(a) && abs(el.getAttribute(a), document.baseURI);
+          if (hit(images, h)) { setAttr(el, a, PLACEHOLDER); acted.push(h); }
         } else if (el.namespaceURI === "http://www.w3.org/2000/svg" && svgHref(el)) {
           const h = abs(svgHref(el), document.baseURI);
           if (hit(images, h)) { dropAttr(el, "xlink:href"); setAttr(el, "href", PLACEHOLDER); acted.push(h); }
@@ -372,16 +386,18 @@ const CLIENT_LIB = String.raw`const sbmcp = (() => {
   return { inventory, redact, undo };
 })();`;
 
-const INVENTORY_JS = `(() => { ${CLIENT_LIB}\nconst r = sbmcp.inventory(); return JSON.stringify({ urls: r.uses.map((x) => x.u), via: r.uses.map((x) => x.via), blob: r.blob }); })()`;
+const INVENTORY_JS = `(() => { ${CLIENT_LIB}\nconst r = sbmcp.inventory(); return JSON.stringify({ urls: r.uses.map((x) => x.u), via: r.uses.map((x) => x.via), blob: r.blob, canvas: r.canvas }); })()`;
 const UNDO_JS = `(() => { ${CLIENT_LIB}\nreturn sbmcp.undo(); })()`;
 const redactJs = (denied: Record<AssetKind, string[]>) => `(() => { ${CLIENT_LIB}\nreturn JSON.stringify(sbmcp.redact(${JSON.stringify(denied)})); })()`;
 
 /**
- * A Lua expression that evaluates `code` (ASCII) in the runtime's window. The code travels base64-encoded: SilverBullet's
- * Lua parser rejects a level-1 long-bracket string that holds `]]]` and a later `]]` (measured on 2.12.1), which nested arrays do.
+ * A Lua expression that evaluates `code` in the runtime's window. The code travels as base64 of its UTF-8, decoded
+ * in the window, so that file names outside ASCII arrive intact; base64 also keeps it out of the Lua parser, which
+ * rejects a level-1 long-bracket string that holds `]]]` and a later `]]` (measured on 2.12.1), as nested arrays do.
  */
 export function jsEval(code: string): string {
-  return `js.window.eval(${luaString(`eval(atob("${Buffer.from(code, "latin1").toString("base64")}"))`)})`;
+  const b64 = Buffer.from(code, "utf8").toString("base64");
+  return `js.window.eval(${luaString(`eval(new TextDecoder().decode(Uint8Array.from(atob("${b64}"), (c) => c.charCodeAt(0))))`)})`;
 }
 
 /** The current page, what the client has loaded since the timing began, and what the shown document uses. */
@@ -397,17 +413,19 @@ export function redactScript(space: string, denied: Redactions): string {
 /** The inventory script's answer turned into uses of the space; anything unparseable throws, so that the check fails closed. */
 export function parseUses(raw: unknown, space: string): Uses {
   if (typeof raw !== "string") throw new Error("the runtime returned no inventory of the shown page");
-  const json = JSON.parse(raw) as { urls?: unknown; via?: unknown; blob?: unknown };
+  const json = JSON.parse(raw) as { urls?: unknown; via?: unknown; blob?: unknown; canvas?: unknown };
   const via = json.via;
   if (!Array.isArray(json.urls) || !Array.isArray(via) || json.urls.length !== via.length) throw new Error("the runtime returned a malformed inventory of the shown page");
-  const vias = new Set(["sheet", "font", "css", "element", "frame"]);
+  const vias = new Set(["sheet", "font", "css", "element", "fixed"]);
   const uses: Use[] = [];
   json.urls.forEach((u: unknown, i) => {
     const v: unknown = via[i];
-    const path = typeof u === "string" ? loadedPath(u, space) : null;
-    if (path !== null && typeof v === "string" && vias.has(v)) uses.push({ path, via: v as Use["via"] });
+    if (typeof u !== "string" || typeof v !== "string" || !vias.has(v)) throw new Error(`the runtime returned a malformed inventory of the shown page (entry ${i})`);
+    // Another origin's resource or a client asset is not a file of the space.
+    const path = loadedPath(u, space);
+    if (path !== null) uses.push({ path, via: v as Use["via"] });
   });
-  return { uses, blob: json.blob === true };
+  return { uses, blob: json.blob === true, canvas: json.canvas === true };
 }
 
 /** The redaction script's answer: the paths it redacted, those it withdrew with a sheet turned off, and whether space styles are off. */
@@ -577,6 +595,8 @@ export type ScreenshotResult = RenderOutcome & { png: Buffer; width: number; hei
 type Handle = {
   lua(script: string): Promise<unknown>;
   screenshot(opts: { selector?: string; fullPage?: boolean }): Promise<Buffer>;
+  /** Runs a script outside the call's deadline, with a deadline of its own as long as a render's; never rejects. */
+  cleanup(script: string): Promise<void>;
 };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -635,8 +655,9 @@ export class Renderer {
           const todo = verify(seen, round === REDACT_ROUNDS);
           if (!todo.font.length && !todo.style.length && !todo.image.length) break;
           const r = parseRedaction(await rt.lua(redactScript(space, todo)), space);
-          for (const k of ["font", "style", "image"] as const) for (const f of todo[k]) if (!done[k].includes(f)) done[k].push(f);
-          for (const f of [...todo.font, ...todo.style, ...todo.image, ...r.paths]) redacted.add(f);
+          // Only what the client reports as changed counts: a file it failed to reach stays to be judged.
+          for (const f of r.paths) redacted.add(f);
+          for (const k of ["font", "style", "image"] as const) for (const f of todo[k]) if (r.paths.includes(f) && !done[k].includes(f)) done[k].push(f);
           stylesOff ||= r.stylesOff;
           await this.settle(rt, space, page);
         }
@@ -647,7 +668,8 @@ export class Renderer {
         verify(after, true);
         return { png, width, height, loaded: after.loads.files.length, warnings: redactionWarnings(space, user.user, done, stylesOff), redacted: done };
       } finally {
-        await rt.lua(RESTORE_SCRIPT).catch(() => {});
+        // Past the deadline too, and never throwing: the result stands and the runtime gets its state back.
+        await rt.cleanup(RESTORE_SCRIPT);
       }
     });
   }
@@ -718,6 +740,13 @@ export class Renderer {
         const handle: Handle = {
           lua: (script) => used(sb.lua(user.token, space, script, remaining())),
           screenshot: (opts) => used(sb.screenshot(user.token, space, opts, remaining())),
+          cleanup: (script) =>
+            Promise.resolve()
+              .then(() => sb.lua(user.token, space, script, Math.max(1, Math.ceil(config.renderTimeout / 1000))))
+              .then(
+                () => {},
+                (e) => log.warn("render.restore", { user: user.user, space, error: (e as Error).message }),
+              ),
         };
         const t1 = Date.now();
         const { warnings, rebooted } = await this.ensureIndex(handle, rt, space);
@@ -792,7 +821,6 @@ export function redactionWarnings(space: string, user: string, done: Redactions,
   const out: string[] = [];
   if (done.font.length) out.push(`Fonts not readable (${why}), shown with ${stylesOff ? "SilverBullet's default theme" : "a substitute font"}: ${list(done.font)}.`);
   if (done.style.length) out.push(`Stylesheets not readable (${why}), shown in SilverBullet's default theme (space styles off): ${list(done.style)}.`);
-  else if (stylesOff && !done.font.length) out.push("Shown in SilverBullet's default theme (space styles off).");
   if (done.image.length) out.push(`Images not readable (${why}), replaced by a placeholder: ${list(done.image)}.`);
   return out;
 }
