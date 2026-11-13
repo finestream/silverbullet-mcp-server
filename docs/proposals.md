@@ -1,6 +1,6 @@
 # Change proposals
 
-Status: **proposed** (2026-11-11); the library of section 5 is built in [`library/`](../library), the tools of section 4 are not yet. It records the design of change proposals: how an agent asks for a change to a page it may not write, and how a person reviews and applies it. The terms *user*, *person*, *agent* and *operator* are those of [security.md](security.md), section 1.
+Status: **built** (2026-11-13): the tools of section 4 in [`src/tools.ts`](../src/tools.ts), the library of section 5 in [`library/`](../library). It records the design of change proposals: how an agent asks for a change to a page it may not write, and how a person reviews and applies it. The terms *user*, *person*, *agent* and *operator* are those of [security.md](security.md), section 1.
 
 ## 1. The problem
 
@@ -53,7 +53,8 @@ Three tools, beside the ten the server has. None writes the target.
 | `propose-delete` | `filename`, `expectedRevision`, the reason, the name, the group | The target exists at that revision |
 | `propose-move` | `filename`, `expectedRevision`, the new name, the reason, the name, the group | The target exists at that revision; nothing exists under the new name |
 
-* **Rights.** `r` on the target, and `w` on the proposal page, which is written under the folder the operator configured for proposals. An agent that may write the target itself is told to use `edit-note`.
+* **Rights.** `r` on the target (and on a move's new name, so that whether a page exists is told only where the agent may read), and `w` on the proposal page, which is written under the folder the operator configured for proposals (`MCP_PROPOSALS_DIR`, default `Proposals/`, the library's default). An agent that may write the target itself is told to use `edit-note`, and one that may delete it, `delete-note`; a move is proposed even by an agent that could write both names, since no tool of the server renames a page with its links.
+* **Places.** The target and a move's new name are pages, outside `CONFIG` and `Library/` (a page moved there would become code), outside the proposal folder and outside the folder of the working copies (`MCP_WORKING_COPIES_DIR`, default `Working copies/`, the library's default), where the library applies nothing. Neither folder may lie in `CONFIG` or `Library/`, where the write filter does not apply; the server does not start otherwise.
 * **An old text that occurs several times** is refused, with the number found, as `edit-note` does. The agent either gives that number as `expectedMatches`, and every occurrence is replaced, or widens the text until it occurs once.
 * **The answer** is the proposal page's name and the diff of the change, as the dry run of `edit-note` returns it.
 * **The page is written as the agent's user**, through the same route as `create-note`, so SilverBullet's history shows who proposed what.
@@ -76,7 +77,8 @@ The library lives in this repository and is released with the server. It is code
 
 * A proposal made through the tools was applicable when it was made, and its result passed the write filter. It can still go stale before it is applied.
 * While a person edits a working copy, that page exists beside its target with the same tags and frontmatter, and appears in queries.
-* The space needs the library in the version the server expects. The server's report page says when it is missing or does not match, and only the proposal tools are refused: reading, writing and rendering go on.
+* The space needs the library in the version the server expects. The scan reads the version and the proposal format from the frontmatter of `Library/Finestream/Proposals`; the report page says when the library is missing or does not match, and only the proposal tools are refused: reading, writing and rendering go on.
+* The two folders are set twice, in the server and in the library's configuration, and the server cannot see the library's: the operator sets the same folders in both.
 * The library *Utilities* keeps no proposal code once this library exists.
 * Two things the library relies on are asserted by its tests in [`test/library/`](../test/library): that a page can be renamed from Space Lua with its links updated, and that a library can show a widget above the pages of one folder only.
 

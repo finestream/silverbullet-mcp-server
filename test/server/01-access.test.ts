@@ -47,9 +47,9 @@ test("auth: GET and DELETE on /mcp are 405 (stateless); /healthz answers without
   assert.deepEqual(Object.keys(body).sort(), ["ok", "scanning", "version"], "nothing about the spaces without a bearer");
 });
 
-test("tools: the v1-compatible tool names plus the two render tools, no search-replace-note", async () => {
+test("tools: the v1-compatible tool names plus the two render tools and the three proposal tools, no search-replace-note", async () => {
   const names = await alice.tools();
-  assert.deepEqual(names.sort(), ["create-note", "delete-note", "edit-note", "list-notes", "list-spaces", "read-multiple-notes", "read-note", "render-note", "screenshot-note", "search-notes"]);
+  assert.deepEqual(names.sort(), ["create-note", "delete-note", "edit-note", "list-notes", "list-spaces", "propose-delete", "propose-edit", "propose-move", "read-multiple-notes", "read-note", "render-note", "screenshot-note", "search-notes"]);
 });
 
 test("access: deny by default: a page without any entry is refused by the access list, not by SilverBullet", async () => {

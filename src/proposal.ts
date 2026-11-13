@@ -36,6 +36,43 @@ import type { Edit } from "./edit.ts";
 export const PROPOSAL_TAG = "change-proposal";
 export const PROPOSAL_FORMAT = 1;
 
+/** The page of the review library (`library/`), as `npm run build:library` names it; the scan reads its version there. */
+export const LIBRARY_PAGE = "Library/Finestream/Proposals";
+
+/** What the scan found of the review library in a space: its version and format, and why the proposal tools are refused, or null. */
+export type LibraryCheck = { version: string | null; format: number | null; problem: string | null };
+
+/**
+ * Checks the library page's frontmatter against this server (docs/proposals.md, section 6): the
+ * library must be there, in the server's version and with the server's format. `text` is null
+ * when the page does not exist.
+ */
+export function checkLibrary(text: string | null, serverVersion: string): LibraryCheck {
+  if (text === null) return { version: null, format: null, problem: `the library is not installed (no page ${LIBRARY_PAGE})` };
+  const fm = text.replace(/\r\n/g, "\n").match(/^---\n([\s\S]*?)\n---(\n|$)/)?.[1] ?? "";
+  const value = (key: string) => {
+    const raw = fm.match(new RegExp(`^${key}:[ \t]*(.*?)[ \t]*$`, "m"))?.[1];
+    return raw === undefined ? null : raw.replace(/^(["'])(.*)\1$/, "$2");
+  };
+  const version = value("version");
+  const formatText = value("proposalFormat");
+  const format = formatText !== null && /^\d+$/.test(formatText) ? Number(formatText) : null;
+  let problem: string | null = null;
+  if (version !== serverVersion) problem = `the library at ${LIBRARY_PAGE} is version ${version ?? "(none)"}, the server ${serverVersion}`;
+  else if (format !== PROPOSAL_FORMAT) problem = `the library at ${LIBRARY_PAGE} reads proposal format ${format ?? "(none)"}, the server writes ${PROPOSAL_FORMAT}`;
+  return { version, format, problem };
+}
+
+/**
+ * Why a page cannot be the target or the new name of a proposal, or null: the library applies
+ * nothing to a page in the proposal folder or in the folder of the working copies.
+ */
+export function outsideProposalFolders(page: string, folders: { proposalsDir: string; workingCopiesDir: string }): string | null {
+  if (page.startsWith(folders.proposalsDir)) return `${page} lies in the proposal folder (${folders.proposalsDir})`;
+  if (page.startsWith(folders.workingCopiesDir)) return `${page} lies in the folder of the working copies (${folders.workingCopiesDir})`;
+  return null;
+}
+
 export type ProposalAction = "edit" | "delete" | "move";
 
 export type Proposal = {

@@ -4,6 +4,7 @@
 // decisions (docs/security.md, sections 9 and 7) are read from here.
 
 import { TRANSCLUSION_RULE } from "./filter/filter.ts";
+import type { LibraryCheck } from "./proposal.ts";
 
 export type Finding = { page: string; line: number; rule: string; detail: string };
 export type FileFinding = { file: string; contentType: string; size: number };
@@ -22,6 +23,8 @@ export type SpaceState = {
   lastScan: Date | null;
   scanMs: number;
   pagesChecked: number;
+  /** The review library as the last scan found it; the proposal tools are refused while it has a problem. */
+  library: LibraryCheck;
 };
 
 export type Check = { ok: boolean; problems: string[] };
@@ -87,6 +90,7 @@ export class State {
         lastScan: null,
         scanMs: 0,
         pagesChecked: 0,
+        library: { version: null, format: null, problem: "not yet checked" },
       };
       this.spaces.set(name, s);
     }
@@ -157,6 +161,14 @@ export class State {
     if (transclusions > 0) parts.push(`${transclusions} transclusion(s) of a page that a user who may render there may not read`);
     if (m > 0) parts.push(`${m} file(s) that are not pages and are not on the allowed-files list`);
     return `Rendering is blocked in space "${space}": the last scan found ${parts.join(" and ")}. Operator: read the report page "${this.reportPage}" in that space, then fix or allow; agents may still read and write, and a cleaned page is accepted.`;
+  }
+
+  /** Why the proposal tools are refused in a space (docs/proposals.md, section 6), or null. Everything else goes on. */
+  proposalsRefusal(space: string): string | null {
+    const s = this.spaces.get(space);
+    const problem = s ? s.library.problem : "not yet checked";
+    if (problem === null) return null;
+    return `The proposal tools are unavailable in space "${space}": ${problem}. Operator: install the Proposals library of this server's release (docs/proposals.md, section 5); the server re-checks on the next scan or SIGHUP. Reading, writing and rendering are not affected.`;
   }
 
   /** After a successful write or delete through the server: the page is clean or gone, so its findings go. */

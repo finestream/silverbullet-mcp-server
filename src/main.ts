@@ -67,6 +67,7 @@ export function buildApp(config: Config) {
     allowedFiles: () => allowedFiles.value ?? [],
     accessList: () => (state.accessList.ok ? accessList.value : null),
     subjects: () => subjectsOf(credentials.value),
+    version,
   });
 
   const renderer = new Renderer({ sb, state, config, log });

@@ -9,7 +9,8 @@ import { createPatch } from "diff";
 
 export type Edit = { oldText: string; newText: string; expectedMatches: number };
 
-export function prepareEdits(content: string, edits: Edit[]): { content: string; counts: number[] } {
+/** `outcome` closes every error message: what did not happen. */
+export function prepareEdits(content: string, edits: Edit[], outcome = "Nothing was written."): { content: string; counts: number[] } {
   const ranges: { start: number; end: number; text: string; edit: number }[] = [];
   const counts: number[] = [];
   edits.forEach((edit, index) => {
@@ -20,7 +21,7 @@ export function prepareEdits(content: string, edits: Edit[]): { content: string;
     }
     if (positions.length !== edit.expectedMatches) {
       throw new Error(
-        `Edit ${index + 1}: expected ${edit.expectedMatches} exact match(es), found ${positions.length > edit.expectedMatches ? "more than expected" : positions.length}. Nothing was written.`,
+        `Edit ${index + 1}: expected ${edit.expectedMatches} exact match(es), found ${positions.length > edit.expectedMatches ? "more than expected" : positions.length}. ${outcome}`,
       );
     }
     counts.push(positions.length);
@@ -29,7 +30,7 @@ export function prepareEdits(content: string, edits: Edit[]): { content: string;
   ranges.sort((a, b) => a.start - b.start);
   for (let i = 1; i < ranges.length; i++) {
     if (ranges[i].start < ranges[i - 1].end) {
-      throw new Error(`Edits ${ranges[i - 1].edit} and ${ranges[i].edit} overlap. Nothing was written.`);
+      throw new Error(`Edits ${ranges[i - 1].edit} and ${ranges[i].edit} overlap. ${outcome}`);
     }
   }
   let result = "";

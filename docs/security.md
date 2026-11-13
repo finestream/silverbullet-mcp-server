@@ -182,7 +182,7 @@ The server runs the filter of section 5 over every page outside `CONFIG` and `Li
 A page in every guarded space, written by the technical user at the page name `MCP_REPORT_PAGE` (default `MCP Server`, at the top level; a value with slashes, such as `Space/MCP Server`, is a path, and the page is written in that folder and nowhere else), for the operator to read and act on:
 
 * findings of the last scan: page, line, rule, reason; non-page files outside the allow entries; pages quarantined in that run;
-* server state: serving or refusing and why; rendering available or blocked; last scan time; allowlist and transform check results; settings weaker than the shipped defaults (section 11);
+* server state: serving or refusing and why; rendering available or blocked; last scan time; allowlist and transform check results; whether the Proposals library is installed in the server's version, without which the proposal tools are refused ([proposals.md](proposals.md), section 6); settings weaker than the shipped defaults (section 11);
 * statistics: users and spaces seen, request counts per tool and refusals per control since the server's start, and the `(user, space)` runtimes the server has used in that space since its start, with first and last use, calls and reboots (section 12).
 
 Every detail on the page is in a code span, a page name is linked only when it holds nothing but letters, digits, spaces and a few punctuation marks, and the rendered page is checked with the filter before it is written: if a name or a detail would still make a directive, a fence or a baked marker, the whole report goes into one fenced block that nothing inside can close. The report page cannot be written or deleted through the tools.

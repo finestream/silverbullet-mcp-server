@@ -4,7 +4,9 @@
 // that user; writes pass the file-type check and the write filter first; the
 // render tools need `x`, render pages only, are refused while the scan has
 // findings in the space, and return nothing when the render loaded a page or
-// file the caller may not read (docs/security.md, sections 7 and 12).
+// file the caller may not read (docs/security.md, sections 7 and 12). The
+// proposal tools test a change against its target and write a proposal page
+// instead of the target (docs/proposals.md, section 4).
 // Tool names and input shapes follow Ahmad-A0/silverbullet-mcp (MIT) so that
 // clients written for v1 keep working.
 
@@ -17,7 +19,8 @@ import type { Allowlist } from "./filter/allowlist.ts";
 import { describe, isCodePlace, TRANSCLUSION_RULE, type Verdict } from "./filter/filter.ts";
 import { checkPageLimited, CheckTimeout } from "./filter/check.ts";
 import type { Credential } from "./credentials.ts";
-import { diffOf, prepareEdits } from "./edit.ts";
+import { diffOf, prepareEdits, type Edit } from "./edit.ts";
+import { formatProposal, outsideProposalFolders, type Proposal } from "./proposal.ts";
 import { RuntimeError, SbError, SilverBullet, type SbFile } from "./sb.ts";
 import type { State } from "./state.ts";
 import { judgeLoads, RenderTimeout, type Loads, type Renderer } from "./render.ts";
@@ -49,7 +52,7 @@ export type Context = {
 };
 
 /** A refusal by one of the server's own controls; the message says which. */
-export type Control = "access-list" | "write-filter" | "file-type" | "refuse-to-serve" | "render-block" | "render-check" | "revision" | "input";
+export type Control = "access-list" | "write-filter" | "file-type" | "refuse-to-serve" | "render-block" | "render-check" | "revision" | "input" | "proposals";
 
 export class Refusal extends Error {
   readonly control: Control;
@@ -229,7 +232,7 @@ export function registerTools(server: McpServer, ctx: Context) {
    * transclusion of a page that the writer, or a user who may render this page, may not read. The
    * check runs in a worker with a time limit; a page it cannot decide in time is refused too.
    */
-  const checkContent = async (space: string, file: string, content: string) => {
+  const checkContent = async (space: string, file: string, content: string, outcome = "Nothing was written.") => {
     if (!file.toLowerCase().endsWith(".md") || isCodePlace(pageNameOf(file))) return;
     const page = pageNameOf(file);
     let verdict: Verdict;
@@ -244,7 +247,7 @@ export function registerTools(server: McpServer, ctx: Context) {
         },
       });
     } catch (e) {
-      if (e instanceof CheckTimeout) throw new Refusal("write-filter", `Refused by the write filter: ${e.message}. Nothing was written. Split the page, or simplify its Markdown (docs/security.md, section 5).`);
+      if (e instanceof CheckTimeout) throw new Refusal("write-filter", `Refused by the write filter: ${e.message}. ${outcome} Split the page, or simplify its Markdown (docs/security.md, section 5).`);
       throw e;
     }
     if (verdict.ok) return;
@@ -256,7 +259,7 @@ export function registerTools(server: McpServer, ctx: Context) {
     const rules: string[] = [];
     if (code.length) rules.push("no code fences, no function definitions or assignments, calls only to allowed functions");
     if (transclusions.length) rules.push("no transclusion of a page or file that the writer, or a user who may render the page, may not read");
-    throw new Refusal("write-filter", `Refused by the write filter: ${parts.join("; and ")}. Nothing was written. Pages outside CONFIG and Library/ are data: ${rules.join("; ")} (docs/security.md, section 5).`);
+    throw new Refusal("write-filter", `Refused by the write filter: ${parts.join("; and ")}. ${outcome} Pages outside CONFIG and Library/ are data: ${rules.join("; ")} (docs/security.md, section 5).`);
   };
 
   /** After a write or delete through the server: the listing is stale, the page's findings go, and a render waits for the index to hold the change. */
@@ -269,6 +272,22 @@ export function registerTools(server: McpServer, ctx: Context) {
   const readText = async (space: string, file: string) => {
     const r = await sb.read(token, space, file);
     return { text: r.body.toString("utf8"), etag: r.etag, contentType: r.contentType };
+  };
+
+  /**
+   * Writes a file as the user, after the file-type check and the write filter; without `overwrite`
+   * only a file that does not exist yet, refused with `exists` otherwise (counted under `control`,
+   * a revision conflict unless given). `outcome` closes a refusal. The caller checks the rights.
+   */
+  const createFile = async (space: string, file: string, body: string | Buffer, overwrite: boolean, exists: string, opts: { control?: Control; outcome?: string } = {}) => {
+    checkFileType(file);
+    if (typeof body === "string") await checkContent(space, file, body, opts.outcome);
+    const r = await sb.write(token, space, file, body, overwrite ? {} : { ifNoneMatch: "*" }).catch((e) => {
+      if (e instanceof SbError && e.status === 412 && !overwrite) throw new Refusal(opts.control ?? "revision", exists);
+      throw e;
+    });
+    written(space, file);
+    return r;
   };
 
   /** Wraps a handler: refusals and SilverBullet's errors become tool errors; every call is logged. */
@@ -552,14 +571,8 @@ export function registerTools(server: McpServer, ctx: Context) {
       const file = normalizeName(filename);
       notReportPage(file);
       need(s, file, "w");
-      checkFileType(file);
       const body = encoding === "base64" ? Buffer.from(content, "base64") : content;
-      if (typeof body === "string") await checkContent(s, file, body);
-      const r = await sb.write(token, s, file, body, overwrite ? {} : { ifNoneMatch: "*" }).catch((e) => {
-        if (e instanceof SbError && e.status === 412 && !overwrite) throw new Refusal("revision", `${file} already exists in ${s}. Use edit-note, or overwrite=true.`);
-        throw e;
-      });
-      written(s, file);
+      const r = await createFile(s, file, body, overwrite, `${file} already exists in ${s}. Use edit-note, or overwrite=true.`);
       return result({ space: s, filename: file, revision: revisionOf(r.etag), overwrite }, `Created ${s}/${file} (revision ${revisionOf(r.etag)})`);
     }),
   );
@@ -652,6 +665,169 @@ export function registerTools(server: McpServer, ctx: Context) {
       });
       written(s, file, true);
       return result({ space: s, filename: file, deleted: true }, `Deleted ${s}/${file}`);
+    }),
+  );
+
+  /** How every refusal of a proposal tool ends. */
+  const PROPOSED = "Nothing was proposed.";
+
+  /** A page a proposal may name as its target or new name (docs/proposals.md, section 4). */
+  const proposable = (file: string, what: string) => {
+    if (!file.endsWith(".md")) throw new Refusal("file-type", `Refused by the file-type rule: a proposal changes pages (.md) only; ${what} "${file}" is another file type.`);
+    notReportPage(file);
+    const page = pageNameOf(file);
+    if (isCodePlace(page)) throw new Refusal("input", `${what} ${page} is CONFIG or lies in Library/, where pages are code; a proposal changes data pages only. ${PROPOSED}`);
+    const why = outsideProposalFolders(page, config);
+    if (why) throw new Refusal("input", `${what} ${why}; the library applies no proposal there. ${PROPOSED}`);
+  };
+
+  /**
+   * What every proposal tool checks first: the space is served, the library is there in this
+   * server's version, the target is a page a proposal may name, the user may read it and write
+   * the proposal page, and the target is at the revision given. Returns the target as read.
+   */
+  const proposalStart = async (args: { space?: string; filename: string; name: string; expectedRevision: string; reason: string }) => {
+    const s = resolveSpace(args.space);
+    serving(s);
+    const refusal = state.proposalsRefusal(s);
+    if (refusal) throw new Refusal("proposals", refusal);
+    if (args.reason.trim() === "") throw new Refusal("input", `The reason is empty; say why the change is proposed, for the person who reviews it. ${PROPOSED}`);
+    const file = normalizeName(args.filename);
+    proposable(file, "The target");
+    const proposal = normalizeName(`${config.proposalsDir}${args.name.replace(/^\/+/, "")}`);
+    if (!proposal.endsWith(".md")) throw new Refusal("input", `The proposal name "${args.name}" ends in a file extension; give a page name without a dot in its last part. ${PROPOSED}`);
+    notReportPage(proposal);
+    need(s, file, "r");
+    need(s, proposal, "w");
+    const original = await readText(s, file);
+    if (!original.etag || original.etag.startsWith("W/")) throw new Refusal("revision", `SilverBullet returned no strong revision; a proposal cannot be tied to the target. ${PROPOSED}`);
+    if (!sameRevision(original.etag, args.expectedRevision)) {
+      throw new Refusal("revision", `Revision conflict: ${file} is at ${revisionOf(original.etag)}, not ${revisionOf(args.expectedRevision.trim())}. Read it again before proposing. ${PROPOSED}`);
+    }
+    return { s, file, page: pageNameOf(file), proposal, original, revision: revisionOf(original.etag)! };
+  };
+
+  /** Refuses a proposal the user could carry out with one of the other tools. */
+  const notOwnRight = async (s: string, file: string, right: Right, use: string) => {
+    if (effectiveRights(s, file, await spaceReadOnly(s)).has(right)) {
+      throw new Refusal("input", `User "${user.user}" has "${right}" on ${s}/${pageNameOf(file)} and makes this change itself: use ${use}. ${PROPOSED}`);
+    }
+  };
+
+  /** Writes the proposal page as the user, through the same checks as create-note; a name in use is refused. */
+  const writeProposal = async (s: string, file: string, p: Proposal) => {
+    const text = formatProposal(p);
+    if (text.length > PAGE_LIMIT) throw new Refusal("input", `The proposal page would be longer than ${PAGE_LIMIT} characters. ${PROPOSED}`);
+    const r = await createFile(s, file, text, false, `A proposal named ${pageNameOf(file)} exists already in ${s}; choose another name. ${PROPOSED}`, { control: "input", outcome: PROPOSED });
+    return revisionOf(r.etag);
+  };
+
+  const proposalArgs = {
+    space,
+    reason: z.string().max(100_000).describe("Why the change is proposed, for the person who reviews it"),
+    name: z.string().min(1).max(200).describe("The proposal page's name, inside the server's proposal folder"),
+    group: z.string().min(1).max(200).optional().describe("A label shared by proposals that belong together, for example a task number; the review takes a group as one batch"),
+  };
+  const PROPOSAL_RULES = "None writes the target: the proposal page is written to the server's proposal folder, where a person reviews it and applies it with their own rights. Needs r on the target and w on the proposal page; the target must be at expectedRevision.";
+
+  server.registerTool(
+    "propose-edit",
+    {
+      title: "Propose edit",
+      description: `Propose edits to a page the user may not write, with the arguments of edit-note: tested against the page as it is now (every old text found as often as expected, no overlap, the result passes the write filter), and answered with the diff. ${PROPOSAL_RULES} A user who may write the page uses edit-note.`,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      inputSchema: {
+        ...proposalArgs,
+        filename: z.string().min(1).describe("The target page"),
+        edits: z
+          .array(
+            z
+              .object({
+                oldText: z.string().min(1).max(100_000).describe("Exact, case-sensitive text in the target"),
+                newText: z.string().max(100_000).describe("Literal replacement; may be empty"),
+                expectedMatches: z.number().int().min(1).max(10_000).default(1),
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(100)
+          .describe("Non-overlapping edits, all matched against the target as it is"),
+        expectedRevision: z.string().min(1).describe("The target's revision, as read-note returns it"),
+      },
+    },
+    tool("propose-edit", async (args) => {
+      const { s, file, page, proposal, original, revision } = await proposalStart(args);
+      await notOwnRight(s, file, "w", "edit-note");
+      let prepared: { content: string; counts: number[] };
+      try {
+        prepared = prepareEdits(original.text, args.edits as Edit[], PROPOSED);
+      } catch (e) {
+        throw new Refusal("input", (e as Error).message);
+      }
+      if (prepared.content === original.text) throw new Refusal("input", `The edits change nothing. ${PROPOSED}`);
+      if (prepared.content.length > PAGE_LIMIT) throw new Refusal("input", `The page would be longer than ${PAGE_LIMIT} characters. ${PROPOSED}`);
+      await checkContent(s, file, prepared.content, PROPOSED);
+      const { diff, truncated } = diffOf(file, original.text, prepared.content);
+      const proposalRevision = await writeProposal(s, proposal, { action: "edit", target: page, revision, reason: args.reason, group: args.group, edits: args.edits as Edit[] });
+      const data = { space: s, proposal: pageNameOf(proposal), action: "edit", target: page, targetRevision: revision, revision: proposalRevision, replacements: prepared.counts, diff, diffTruncated: truncated };
+      return result(data, `Proposed: ${s}/${pageNameOf(proposal)} edits ${page}\n${diff}${truncated ? "\n[Diff truncated]" : ""}`);
+    }),
+  );
+
+  server.registerTool(
+    "propose-delete",
+    {
+      title: "Propose delete",
+      description: `Propose deleting a page the user may not delete; answered with the page's text as a diff. ${PROPOSAL_RULES} A user who may delete the page uses delete-note.`,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      inputSchema: {
+        ...proposalArgs,
+        filename: z.string().min(1).describe("The page to delete"),
+        expectedRevision: z.string().min(1).describe("The page's revision, as read-note returns it"),
+      },
+    },
+    tool("propose-delete", async (args) => {
+      const { s, file, page, proposal, original, revision } = await proposalStart(args);
+      await notOwnRight(s, file, "d", "delete-note");
+      const { diff, truncated } = diffOf(file, original.text, "");
+      const proposalRevision = await writeProposal(s, proposal, { action: "delete", target: page, revision, reason: args.reason, group: args.group });
+      const data = { space: s, proposal: pageNameOf(proposal), action: "delete", target: page, targetRevision: revision, revision: proposalRevision, diff, diffTruncated: truncated };
+      return result(data, `Proposed: ${s}/${pageNameOf(proposal)} deletes ${page}\n${diff}${truncated ? "\n[Diff truncated]" : ""}`);
+    }),
+  );
+
+  server.registerTool(
+    "propose-move",
+    {
+      title: "Propose move",
+      description: `Propose moving (renaming) a page, which also updates the links to it when applied; this is how a new page written where the user may write gets to its place. Nothing may exist under the new name, and the page must pass the write filter there. ${PROPOSAL_RULES}`,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      inputSchema: {
+        ...proposalArgs,
+        filename: z.string().min(1).describe("The page to move"),
+        newName: z.string().min(1).describe("The page's new name"),
+        expectedRevision: z.string().min(1).describe("The page's revision, as read-note returns it"),
+      },
+    },
+    tool("propose-move", async (args) => {
+      const { s, file, page, proposal, original, revision } = await proposalStart(args);
+      const to = normalizeName(args.newName);
+      proposable(to, "The new name");
+      if (to === file) throw new Refusal("input", `The new name is the page's name. ${PROPOSED}`);
+      // Whether a page exists is told only where the user may read.
+      need(s, to, "r");
+      const taken = await sb.read(token, s, to).then(
+        () => true,
+        (e) => {
+          if (e instanceof SbError && e.status === 404) return false;
+          throw e;
+        },
+      );
+      if (taken) throw new Refusal("input", `${s}/${pageNameOf(to)} exists already; a move cannot replace a page. ${PROPOSED}`);
+      await checkContent(s, to, original.text, PROPOSED);
+      const proposalRevision = await writeProposal(s, proposal, { action: "move", target: page, to: pageNameOf(to), revision, reason: args.reason, group: args.group });
+      const data = { space: s, proposal: pageNameOf(proposal), action: "move", target: page, to: pageNameOf(to), targetRevision: revision, revision: proposalRevision };
+      return result(data, `Proposed: ${s}/${pageNameOf(proposal)} moves ${page} to ${pageNameOf(to)}`);
     }),
   );
 
