@@ -12,6 +12,7 @@ import { SbError, type SilverBullet, type SbFile } from "./sb.ts";
 import type { Config } from "./config.ts";
 import type { State, SpaceState, Finding, FileFinding } from "./state.ts";
 import type { Log } from "./log.ts";
+import { checkLibrary, LIBRARY_PAGE } from "./proposal.ts";
 import { parser as mdParser } from "@lezer/markdown";
 
 /** The rule of a page whose check did not end within the limit (docs/security.md, section 7). */
@@ -79,6 +80,8 @@ export type ScanDeps = {
   /** The access list and the users of the credentials file, for the transclusion rule; without them it is not checked. */
   accessList?: () => AccessList | null;
   subjects?: () => readonly Subject[];
+  /** The server's version, which the review library must have. */
+  version: string;
 };
 
 export type ScanSummary = { spaces: string[]; findings: number; files: number; unguarded: string[]; missingTransform: string[]; ms: number };
@@ -172,6 +175,15 @@ export class Scanner {
       s.transform = hasTransform(cfg.body.toString("utf8")) ? "present" : "missing";
     } catch (e) {
       if (e instanceof SbError && e.status === 404) s.transform = "missing";
+      else throw e;
+    }
+
+    // The review library, for the proposal tools.
+    try {
+      const page = await sb.read(token, space, `${LIBRARY_PAGE}.md`);
+      s.library = checkLibrary(page.body.toString("utf8"), this.d.version);
+    } catch (e) {
+      if (e instanceof SbError && e.status === 404) s.library = checkLibrary(null, this.d.version);
       else throw e;
     }
 
@@ -337,6 +349,7 @@ export function renderReport(space: string, s: SpaceState, state: State, config:
   lines.push(`* Serving: ${refusal ? `**no**. ${cell(refusal)}` : "yes"}`);
   lines.push(`* Rendering: ${block ? `**blocked**. ${cell(block)}` : "available where the access list grants x"}`);
   lines.push(`* Transform block in CONFIG: ${s.transform === "present" ? "present" : "**missing**"}`);
+  lines.push(`* Proposals library: ${s.library.problem ? `**proposal tools unavailable**: ${cell(s.library.problem)}` : `version ${s.library.version}, proposal tools available`}`);
   lines.push(`* Allowlist: ${state.allowlist.ok ? "valid" : `**invalid**: ${cell(state.allowlist.problems.join("; "))}`}`);
   lines.push(`* Last scan: ${s.lastScan?.toISOString() ?? "never"}, ${s.scanMs} ms, ${s.pagesChecked} page(s) checked, ${fileCount} file(s) seen`);
   lines.push(`* Scan mode: ${config.scanMode === "quarantine" ? "quarantine" : "report-only"}; interval: ${config.scanInterval === 0 ? "none (start and SIGHUP only)" : `${Math.round(config.scanInterval / 60000)} min`}`);

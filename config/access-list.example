@@ -21,5 +21,6 @@
 @agents     notes   SETTINGS        -
 @agents     notes   Library/        -
 @agents     notes   Shared/         rw
+@agents     notes   Proposals/      rw
 writer-bot  notes   Shared/Bot/     rwdx
 writer-bot  notes   Shared/         rwx

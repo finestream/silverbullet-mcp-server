@@ -27,7 +27,7 @@ The server ships strict: a deny-by-default access list, a write filter on every 
 
 ## Status
 
-The server in `src/` serves the ten tools below as the authenticated user, with the credentials file, the access list, the write filter (in a worker thread with a time limit, transclusion rule included), the scan with its report page, the refusal to serve, and the two render tools over SilverBullet's Runtime API with the render check. The client guide and the acceptance test below are the deployment material. Authentication is by static bearer, by OAuth access token of an external identity provider ([docs/oauth.md](docs/oauth.md); built and tested against a test issuer, not yet run against a real identity provider), or by the assertion Cloudflare Access adds to a request it let through ([docs/cloudflare-access.md](docs/cloudflare-access.md); built and tested against a test team domain). The library with which a person reviews change proposals is in `library/` ([docs/proposals.md](docs/proposals.md), section 5); the tools with which an agent proposes a change to a page it may not write are designed, not built. The architecture and the security model are in `docs/`; the *release checks* in `test/` assert, per SilverBullet release, the behaviour the design relies on.
+The server in `src/` serves the thirteen tools below as the authenticated user, with the credentials file, the access list, the write filter (in a worker thread with a time limit, transclusion rule included), the scan with its report page, the refusal to serve, and the two render tools over SilverBullet's Runtime API with the render check. The client guide and the acceptance test below are the deployment material. Authentication is by static bearer, by OAuth access token of an external identity provider ([docs/oauth.md](docs/oauth.md); built and tested against a test issuer, not yet run against a real identity provider), or by the assertion Cloudflare Access adds to a request it let through ([docs/cloudflare-access.md](docs/cloudflare-access.md); built and tested against a test team domain). An agent proposes a change to a page it may not write with the three proposal tools, and a person reviews and applies it with the library in `library/` ([docs/proposals.md](docs/proposals.md)). The architecture and the security model are in `docs/`; the *release checks* in `test/` assert, per SilverBullet release, the behaviour the design relies on.
 
 ## What is here
 
@@ -38,7 +38,7 @@ The server in `src/` serves the ten tools below as the authenticated user, with 
 | [`docs/cloudflare-access.md`](docs/cloudflare-access.md) | Cloudflare Access in front of the server: what the server verifies, what the Access application must do, the route, connecting a client |
 | [`docs/security.md`](docs/security.md) | Security model: threat model, access list, write filter, allowlist, scan, index-time transform, defaults |
 | [`docs/space-guidelines.md`](docs/space-guidelines.md) | Conventions a space follows when this server guards it |
-| [`docs/proposals.md`](docs/proposals.md) | Design of change proposals: tools with which an agent proposes a change to a page it may not write (not yet built), and the library with which a person reviews and applies it |
+| [`docs/proposals.md`](docs/proposals.md) | Design of change proposals: tools with which an agent proposes a change to a page it may not write, and the library with which a person reviews and applies it |
 | [`docs/facts/`](docs/facts) | Measured behaviour of SilverBullet 2.12.1 that the security model rests on |
 | [`src/`](src) | The server: `main.ts` (entry, `--scan`, `--hash`), `config.ts` (the environment, the watched configuration files), `server.ts` (HTTP, auth), `oauth.ts` and `cf-access.ts` (the two verifiers, sharing `jwt.ts`), `tools.ts` (the tools), `sb.ts` (SilverBullet's file, configuration and Runtime APIs), `filter/` (the write filter on the vendored parser, its worker, the allowlist), `access.ts`, `credentials.ts`, `scan.ts` (the scan and the report page), `state.ts` (the refuse-to-serve and render-block state), `render.ts` (the render path over the Runtime API, the render check), `edit.ts`, `match.ts` (user regexes in a worker), `log.ts`; unit tests beside the code |
 | [`library/`](library) | The *Proposals* library: `Proposals.md` is the page to install as `Library/Finestream/Proposals`, built from `library/src/` by `npm run build:library` (CI checks that it is up to date); its documentation and configuration are on that page |
@@ -129,6 +129,8 @@ Four files, the last optional, and a few variables. The files are re-read when t
 | `MCP_SCAN_INTERVAL` | `15m` | Time between scans (`0`: at start and on `SIGHUP` only) |
 | `MCP_SCAN_MODE` | `report` | `report` or `quarantine` ([docs/security.md](docs/security.md), section 7) |
 | `MCP_REPORT_PAGE` | `MCP Server` | The report page of every guarded space, written at this page name; a path such as `Space/MCP Server` puts it in a folder ([docs/security.md](docs/security.md), section 8) |
+| `MCP_PROPOSALS_DIR` | `Proposals/` | The folder the proposal tools write to; the same folder as `proposalPrefix` in the library's configuration ([docs/proposals.md](docs/proposals.md), section 4) |
+| `MCP_WORKING_COPIES_DIR` | `Working copies/` | The folder of the library's working copies (`workingCopyPrefix`), which no proposal may target; it may not lie inside the proposal folder, nor that inside it |
 | `MCP_RATE_LIMIT` | `120` | Tool calls per user and minute; `0` for none |
 | `MCP_RENDER_PARALLEL` | `4` | Runtime API calls in flight at once, over all users and spaces (*Rendering* below) |
 | `MCP_RENDER_TIMEOUT` | `90s` | The most a `render-note` or `screenshot-note` call may take, queue and index wait included |
@@ -142,7 +144,15 @@ Four files, the last optional, and a few variables. The files are re-read when t
 
 ## Tools
 
-`list-spaces`, `list-notes`, `read-note`, `read-multiple-notes`, `search-notes`, `create-note`, `edit-note`, `delete-note`, `render-note`, `screenshot-note`, with the names and inputs of v1 where they exist, plus a `space` parameter on each (default: the user's default space). `edit-note` needs the `revision` that `read-note` returned and has a `dryRun`. The semantics, the SilverBullet calls and the rights each tool needs are in [docs/architecture.md](docs/architecture.md), *Tool surface*.
+`list-spaces`, `list-notes`, `read-note`, `read-multiple-notes`, `search-notes`, `create-note`, `edit-note`, `delete-note`, `render-note`, `screenshot-note`, with the names and inputs of v1 where they exist, plus a `space` parameter on each (default: the user's default space), and the proposal tools `propose-edit`, `propose-delete` and `propose-move`. `edit-note` needs the `revision` that `read-note` returned and has a `dryRun`.
+
+| Proposal tool | Arguments | What it checks before it writes the proposal page |
+|---|---|---|
+| `propose-edit` | those of `edit-note` (`filename`, `edits`, `expectedRevision`), `reason`, `name`, optional `group` | the target is at that revision; every old text occurs as often as expected, no two overlap; the resulting page passes the write filter. Answers with the diff, as the dry run of `edit-note` does |
+| `propose-delete` | `filename`, `expectedRevision`, `reason`, `name`, optional `group` | the target is at that revision |
+| `propose-move` | `filename`, `newName`, `expectedRevision`, `reason`, `name`, optional `group` | the target is at that revision; nothing exists under the new name; the page passes the write filter there |
+
+None writes the target: each writes one proposal page, `<MCP_PROPOSALS_DIR><name>`, as the user, which a person reviews and applies with the library. They need `r` on the target and `w` on the proposal page; a user who may write (or, for a delete, delete) the target is told to use `edit-note` (or `delete-note`). The target and a new name must be pages outside `CONFIG`, `Library/`, the proposal folder and the folder of the working copies. In a space without the library, or with a library of another version, only these three tools are refused, and the report page says so. The semantics, the SilverBullet calls and the rights each tool needs are in [docs/architecture.md](docs/architecture.md), *Tool surface*.
 
 ## Rendering
 

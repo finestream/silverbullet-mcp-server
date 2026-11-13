@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig, parseReportPage, parseCount, parseDuration, DEFAULT_SCAN_USER } from "./config.ts";
+import { loadConfig, parseProposalFolders, parseReportPage, parseCount, parseDuration, DEFAULT_SCAN_USER } from "./config.ts";
 
 test("the scan's technical user is `scan` unless MCP_SCAN_USER names another", () => {
   assert.equal(loadConfig({}).scanUser, "scan");
@@ -52,4 +52,15 @@ test("the report page is a page name or a path, normalised: no leading slash, no
   assert.equal(parseReportPage(""), "MCP Server");
   assert.equal(parseReportPage("/"), "MCP Server");
   assert.equal(parseReportPage(".md"), "MCP Server");
+});
+
+test("the proposal folders default to the library's, end in one slash, and may not lie inside each other", () => {
+  const d = loadConfig({});
+  assert.deepEqual([d.proposalsDir, d.workingCopiesDir], ["Proposals/", "Working copies/"]);
+  const c = loadConfig({ MCP_PROPOSALS_DIR: "  /Review/Proposals ", MCP_WORKING_COPIES_DIR: "Review/Copies//" });
+  assert.deepEqual([c.proposalsDir, c.workingCopiesDir], ["Review/Proposals/", "Review/Copies/"]);
+  assert.deepEqual(parseProposalFolders("", " "), { proposalsDir: "Proposals/", workingCopiesDir: "Working copies/" }, "blank means the default");
+  assert.throws(() => loadConfig({ MCP_PROPOSALS_DIR: "Review", MCP_WORKING_COPIES_DIR: "Review/Copies" }), /must not lie inside each other/);
+  assert.throws(() => parseProposalFolders("Same", "Same/"), /must not lie inside each other/);
+  assert.deepEqual(parseProposalFolders("Review", "Reviewed"), { proposalsDir: "Review/", workingCopiesDir: "Reviewed/" }, "a shared prefix of the name is not inside");
 });
