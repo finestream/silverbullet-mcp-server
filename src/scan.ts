@@ -178,13 +178,13 @@ export class Scanner {
       else throw e;
     }
 
-    // The review library, for the proposal tools.
+    // The review library, for the proposal tools; a page that cannot be read refuses them only.
     try {
       const page = await sb.read(token, space, `${LIBRARY_PAGE}.md`);
       s.library = checkLibrary(page.body.toString("utf8"), this.d.version);
     } catch (e) {
       if (e instanceof SbError && e.status === 404) s.library = checkLibrary(null, this.d.version);
-      else throw e;
+      else s.library = { version: null, format: null, problem: `the library page ${LIBRARY_PAGE} cannot be read: ${(e as Error).message}` };
     }
 
     // Pages outside CONFIG and Library/, and files that are not pages.
