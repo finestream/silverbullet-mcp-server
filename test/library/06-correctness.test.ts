@@ -96,6 +96,57 @@ return {headings = box.querySelectorAll("h1").length, pre = out}`);
   assert.match(r.pre[1], /# not a heading\s*x = 2/);
 });
 
+/** The `pre` texts of the formatted view, and what is left of a fence as text. */
+const FORMATTED = `local box = js.window.document.querySelector(".proposals-formatted")
+local pres = box.querySelectorAll("pre")
+local out = {}
+for i = 1, pres.length do table.insert(out, pres[i].textContent) end
+local text = box.textContent
+for i = 1, pres.length do text = string.gsub(text, pres[i].textContent, "", 1) end
+return {headings = box.querySelectorAll("h1").length, pre = out, rest = text}`;
+
+async function formattedAfter(name: string, target: string, oldText: string, newText: string) {
+  await writePage(`T/${name}`, target);
+  await writeProposal(`P/${name}`, { action: "edit", target: `T/${name}`, revision: await revisionOf(target), reason: "", edits: [{ oldText, newText, expectedMatches: 1 }] });
+  await open(`review:P/${name}`, ".proposals-formatted");
+  return lua<{ headings: number; pre: string[]; rest: string }>(FORMATTED);
+}
+
+test("correctness: a fence with a blank line in a nested list item is one block, its content literal", async () => {
+  const target = "- a\n    - b\n\n      ```\n      first\n\n      # not a heading\n      ```\n\nOutro\n";
+  const r = await formattedAfter("Nested", target, "Outro", "Finale");
+  assert.equal(r.headings, 0);
+  assert.equal(r.pre.length, 1, JSON.stringify(r.pre));
+  assert.match(r.pre[0], /first\s*# not a heading/);
+  assert.ok(!r.rest.includes("```"), `a fence is left as text: ${r.rest}`);
+});
+
+test("correctness: a change inside a nested fence shows the block whole, removed and added", async () => {
+  const target = "- a\n    - b\n\n      ```\n      first\n\n      x = 1\n      ```\n\nOutro\n";
+  const r = await formattedAfter("NestedChange", target, "x = 1", "x = 2");
+  assert.equal(r.pre.length, 2, JSON.stringify(r.pre));
+  assert.match(r.pre[0], /first\s*x = 1/);
+  assert.match(r.pre[1], /first\s*x = 2/);
+  assert.ok(!r.rest.includes("```"), `a fence is left as text: ${r.rest}`);
+});
+
+test("correctness: a fence in a blockquote stays one block", async () => {
+  const target = "> ```\n> first\n>\n> # not a heading\n> ```\n\nOutro\n";
+  const r = await formattedAfter("Quote", target, "Outro", "Finale");
+  assert.equal(r.headings, 0);
+  assert.equal(r.pre.length, 1, JSON.stringify(r.pre));
+  assert.match(r.pre[0], /first\s*# not a heading/);
+});
+
+test("correctness: a fence at top level with a blank line is unchanged", async () => {
+  const target = "```\nfirst\n\n# not a heading\n```\n\nOutro\n";
+  const r = await formattedAfter("Top", target, "Outro", "Finale");
+  assert.equal(r.headings, 0);
+  assert.equal(r.pre.length, 1, JSON.stringify(r.pre));
+  assert.match(r.pre[0], /first\s*# not a heading/);
+  assert.deepEqual(await lua(`return proposals.blocks(${JSON.stringify(target)})`), ["```\nfirst\n\n# not a heading\n```", "Outro"]);
+});
+
 test("correctness: a changed table header is shown, the table removed and added", async () => {
   const target = "| a | b |\n|---|---|\n| 1 | 2 |\n";
   await writePage("T/Table", target);
