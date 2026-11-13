@@ -204,6 +204,48 @@ return {
   assert.deepEqual(r.controls, [true, true, true, false, false]);
 });
 
+test("safety: the renderer requests nothing for reference-style images or a transclusion of an address, and the formatted view shows their addresses as notes", async () => {
+  // probed against the renderer: it knows no reference definitions and shows a remote ![[...]] as an error text, with no img element
+  const r = await lua<Record<string, unknown>>(`js.window.performance.clearResourceTimings()
+local token = "probe-" .. tostring(math.random(1, 1000000000))
+local base = js.window.location.origin .. "/.fs/" .. token
+local forms = {
+  "![x][r]\\n\\n[r]: " .. base .. "-1.png",
+  "![r][]\\n\\n[r]: " .. base .. "-2.png",
+  "![r]\\n\\n[r]: " .. base .. "-3.png",
+  "![x][r]\\n\\n[r]: <" .. base .. "-4.png> \\"title\\"",
+  "![[" .. base .. "-5.png]]",
+  "![[" .. base .. "-6.png|200x100]]",
+  "![[" .. js.window.location.origin:gsub("^https?:", "") .. "/.fs/" .. token .. "-7.png]]",
+}
+local doc = js.window.document.implementation.createHTMLDocument("")
+local raw, piped = {}, {}
+for _, form in ipairs(forms) do
+  -- the renderer alone, then the formatted view
+  local holder = doc.createElement("div")
+  holder.innerHTML = markdown.markdownToHtml(form)
+  table.insert(raw, { images = holder.querySelectorAll("img").length, text = holder.textContent })
+  table.insert(piped, proposals.markdownBlock(form, "").textContent)
+end
+return { token = token, base = base, raw = raw, piped = piped }`);
+  await sleep(1500);
+  const token = String(r.token);
+  const requested = await lua<number>(`local n = 0
+local e = js.window.performance.getEntriesByType("resource")
+for i = 1, e.length do if string.find(e[i].name, ${JSON.stringify(token)}, 1, true) then n = n + 1 end end
+return n`);
+  assert.equal(requested, 0, "no form was requested, by the renderer or by the formatted view");
+  const raw = r.raw as Array<{ images: number; text: string }>;
+  const piped = r.piped as string[];
+  raw.forEach((form, n) => {
+    assert.equal(form.images, 0, `form ${n + 1}: the renderer emits no img element`);
+    assert.doesNotMatch(form.text, /remote image not loaded/, `form ${n + 1}: nothing of this came from the sanitizer`);
+  });
+  for (let n = 0; n < 4; n++) {
+    assert.ok(piped[n].includes(`${token}-${n + 1}.png`), `form ${n + 1}: the address of the reference definition stays visible`);
+  }
+});
+
 test("safety: a page outside the proposal folder is no proposal: no Reject, not listed, not applied", async () => {
   assert.match(await open("review:T/Victim", ".proposals-notice"), /not a page in the proposal folder/);
   const labels = await lua<string[]>(`local out = {}
