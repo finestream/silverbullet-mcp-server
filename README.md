@@ -155,11 +155,10 @@ Four files, the last optional, and a few variables. The files are re-read when t
 ```sh
 npm run lint                                          # eslint and tsc
 npm run test:unit                                     # the edit engine, the write filter, the access list, the credentials file, the verifiers
-docker compose -f test/compose.yaml up -d --wait      # SilverBullet on http://127.0.0.1:3300
-node test/bootstrap.ts                                # users, spaces, tokens, seed pages (idempotent)
+node test/instance.ts up                              # this working copy's SilverBullet instance (own project name and port), bootstrapped
 npm run test:integration                              # the server against that instance, rendering included
 node test/run.ts                                      # the release checks, report in test/report/<version>.md
-docker compose -f test/compose.yaml down -v
+node test/instance.ts down                            # remove the instance
 ```
 
 Details, another SilverBullet release and a run without Docker: [test/README.md](test/README.md).

@@ -9,6 +9,7 @@ import { parser as mdParser } from "@lezer/markdown";
 import { checkPage } from "../../src/filter/filter.ts";
 import { shippedAllowlist } from "../../src/filter/allowlist.ts";
 import { sb, T } from "../lib/env.ts";
+import { current } from "../instance.ts";
 
 const chunk = `## Section
 
@@ -55,7 +56,7 @@ test("cost: the write filter checks a 50 KB page with ~200 directives in well un
 });
 
 test("cost: memory of the SilverBullet container with its runtimes (from the container's cgroup; needs Docker)", async (t) => {
-  const container = process.env.SB_CONTAINER ?? "sbmcp-test-silverbullet-1";
+  const container = process.env.SB_CONTAINER ?? current().container;
   let bytes: number;
   try {
     bytes = Number(execFileSync("docker", ["exec", container, "cat", "/sys/fs/cgroup/memory.current"], { stdio: ["ignore", "pipe", "ignore"] }).toString().trim());

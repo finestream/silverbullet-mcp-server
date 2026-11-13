@@ -7,14 +7,18 @@
 Needs Node.js 24 or newer (it runs the `.ts` files directly) and a SilverBullet instance in multi-space mode with the Runtime API available. With Docker, from the repository root:
 
 ```sh
-npm install                                           # the server's dependencies; playwright for the browser checks is optional
-docker compose -f test/compose.yaml up -d --wait      # SilverBullet on http://127.0.0.1:3300
-node test/run.ts                                      # bootstrap (idempotent), all checks, report
-npm run test:integration                              # the server's integration tests, test/server/*.test.ts
-docker compose -f test/compose.yaml down -v           # remove everything
+npm install                          # the server's dependencies; playwright for the browser checks is optional
+node test/instance.ts up             # starts this working copy's SilverBullet instance and bootstraps it
+node test/run.ts                     # all checks, report (starts the instance itself if needed)
+npm run test:integration             # the server's integration tests, test/server/*.test.ts (starts the instance itself)
+node test/instance.ts down           # remove the instance with its volume (down -v)
 ```
 
-Another release: `SB_IMAGE=ghcr.io/silverbulletmd/silverbullet:edge docker compose -f test/compose.yaml up -d --wait`, then the same run.
+**One instance per working copy.** `test/instance.ts` takes the Docker Compose project name and the port from the working copy, so working copies on one machine never share an instance: on a branch `claude/task-<id>-…` the project is `sbmcp-test-<id>` and the port `10000+<id>` (ids up to 29999); in another linked worktree both come from a hash of the path (ports 40000 to 59999); a plain clone and CI keep `sbmcp-test` and 3300. `COMPOSE_PROJECT_NAME` and `SB_PORT` in the environment win. `up` records the instance in `test/.state/env`; `down` and `env` read it from there, so they find the instance `up` started even after a branch switch. `up` bootstraps only when that file is not current, `node test/bootstrap.ts` forces it. With `SB_URL` set, `up` and the npm test scripts leave the instance to you. `node test/instance.ts env` prints what applies, to use with `docker compose -p` by hand.
+
+**Never copy `test/.state`** from another working copy: the tokens in it belong to that instance and a bootstrap against another one replaces them. Each working copy writes its own with `up`. When you are done, remove the instance with `node test/instance.ts down` (or `docker compose -p <project> -f test/compose.yaml down -v`); an instance that stays up holds a container, a volume and a port.
+
+Another release: `SB_IMAGE=ghcr.io/silverbulletmd/silverbullet:edge node test/instance.ts up`, then the same run.
 
 Without Docker, against any instance you run yourself (the server binary with `silverbullet setup <folder> --admin admin:<password>`, and `SB_CHROME_PATH` pointing at a Chromium for the Runtime API):
 
@@ -28,7 +32,7 @@ The seed pages of `alpha` hold code outside `Library/` on purpose (`Outside`, `S
 
 `delta` is not one of the server's spaces: it is where `dora`, a person with the Runtime API, reviews change proposals with the Proposals library (`library/`). The tests in `library/` (`npm run test:library`) install the library as the sources build it now and restart the runtimes first, so it is the one loaded; write their pages through dora's client, whose index learns about a page written through the file API only when it syncs; and assert on the document of that client (the counter, the buttons, the bar above a working copy), clicking the buttons as a person would. Their proposal folder is `P/`. They delete their pages (`T/…`, `P/…`, `Q/…`, `Working copies/…`) before each test. A test that needs a confirmation dialog answered replaces `editor.confirm` in that client.
 
-The browser checks need Chromium for Playwright: `cd test && npx playwright install chromium`. Without it they are skipped, as with `SB_BROWSER=0`. The memory measurement reads the container's cgroup through `docker exec` (container name in `SB_CONTAINER`, default `sbmcp-test-silverbullet-1`); without Docker it is skipped.
+The browser checks need Chromium for Playwright: `cd test && npx playwright install chromium`. Without it they are skipped, as with `SB_BROWSER=0`. The memory measurement reads the container's cgroup through `docker exec` (container name in `SB_CONTAINER`, set by `up` in `.state/env`, default `sbmcp-test-silverbullet-1`); without Docker it is skipped.
 
 Any Docker with Compose works; give the daemon or VM about 4 GB, since the container runs a Chromium per runtime.
 

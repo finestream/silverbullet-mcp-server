@@ -21,6 +21,8 @@ export type BootstrapOptions = {
   adminPassword?: string;
   userPassword?: string;
   log?: (line: string) => void;
+  /** More KEY=value lines for test/.state/env (test/instance.ts: which instance this is). */
+  extraEnv?: Record<string, string>;
 };
 
 const GRANTS: Record<string, Record<string, { role: "read" | "write"; runtimeApi?: boolean }>> = {
@@ -130,6 +132,7 @@ export async function bootstrap(opts: BootstrapOptions = {}) {
     `SB_TOKEN_DORA=${tokens.dora}`,
     `SB_TOKEN_SCAN=${tokens.scan}`,
     `SB_USER_PASSWORD=${userPassword}`,
+    ...Object.entries(opts.extraEnv ?? {}).map(([k, v]) => `${k}=${v}`),
     "",
   ].join("\n");
   writeFileSync(join(stateDir, "env"), envText);

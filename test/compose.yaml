@@ -1,10 +1,13 @@
 # Test instance: SilverBullet in multi-space mode, provisioned by `silverbullet setup`.
 #
-#   docker compose -f test/compose.yaml up -d --wait   # SilverBullet on http://127.0.0.1:3300
-#   node test/run.ts                                    # bootstraps users, spaces, tokens, seeds; runs the checks
-#   docker compose -f test/compose.yaml down -v         # remove everything
+#   node test/instance.ts up     # starts this working copy's instance and bootstraps it (project name and port: see instance.ts)
+#   node test/run.ts             # the checks
+#   node test/instance.ts down   # remove everything (down -v)
 #
-# Another release: SB_IMAGE=ghcr.io/silverbulletmd/silverbullet:edge docker compose -f test/compose.yaml up -d --wait
+# A plain clone and CI use the project sbmcp-test on http://127.0.0.1:3300, for example:
+#   docker compose -f test/compose.yaml up -d --wait
+#
+# Another release: SB_IMAGE=ghcr.io/silverbulletmd/silverbullet:edge node test/instance.ts up
 #
 # Grants (see lib/bootstrap.ts):
 #   space  path    alice                 bob                   scan
@@ -13,7 +16,7 @@
 #   gamma  /gamma  write + Runtime API   read                  write
 #   admin is an administrator and is used by the bootstrap and the runtime checks.
 
-name: sbmcp-test
+name: ${COMPOSE_PROJECT_NAME:-sbmcp-test}
 
 services:
   setup:
