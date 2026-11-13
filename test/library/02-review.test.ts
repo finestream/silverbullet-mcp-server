@@ -186,6 +186,9 @@ test("review: placeholders in code and a plain < in prose are no HTML: the revie
   assert.equal(v.formatted, "flex", "the formatted view is shown");
   assert.equal(v.text, "none");
   assert.deepEqual([v.formattedWeight, v.textWeight], ["bold", "normal"]);
+  const formatted = await shown(".proposals-formatted");
+  assert.ok(formatted.includes("<task> - <subject>"), formatted);
+  assert.ok(formatted.includes("<name> <kbBaseUrl>"), formatted);
 });
 
 test("review: an inline <img> in a paragraph still opens the review on the text view", async () => {
@@ -203,3 +206,25 @@ test("review: an inline <img> in a paragraph still opens the review on the text 
   assert.equal(v.formatted, "none", "the text view comes first");
   assert.deepEqual([v.formattedWeight, v.textWeight], ["normal", "bold"]);
 });
+
+for (const [label, html] of [
+  ["a <?…?> block", "Before.\n\n<?php echo 1; ?>\n\nAfter."],
+  ["a <!-- … --> block", "Before.\n\n<!-- hidden\nlines -->\n\nAfter."],
+  ["a <!DOCTYPE x> line", "Before.\n\n<!DOCTYPE x>\n\nAfter."],
+] as const) {
+  test(`review: ${label} opens the review on the text view`, async () => {
+    const target = "Intro.\n";
+    await writePage("T/Block", target);
+    await writeProposal("P/block", {
+      action: "edit",
+      target: "T/Block",
+      revision: await revisionOf(target),
+      reason: "",
+      edits: [{ oldText: "Intro.", newText: html, expectedMatches: 1 }],
+    });
+    await open("review:P/block", ".proposals-formatted");
+    const v = await viewState();
+    assert.equal(v.formatted, "none", "the text view comes first");
+    assert.deepEqual([v.formattedWeight, v.textWeight], ["normal", "bold"]);
+  });
+}

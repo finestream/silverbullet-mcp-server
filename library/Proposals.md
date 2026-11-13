@@ -1248,30 +1248,49 @@ function proposals.sanitize(root)
 end
 
 -----------------------------------------------------------------------
+-- proposals.walkTree(node, visit)
+--
+-- Calls visit(node) for a node of the parse tree and its descendants, in
+-- order; a visit that returns true leaves out the node's children.
+function proposals.walkTree(node, visit)
+	if visit(node) then return end
+	for _, child in ipairs(node.children or {}) do proposals.walkTree(child, visit) end
+end
+
+-----------------------------------------------------------------------
 -- proposals.holdsHtml(text)
 --
 -- Whether a page text holds HTML as the renderer sees it (an inline tag,
--- an HTML block, a comment), which the formatted view shows only in
--- part: the review then opens on the text view. The parse tree decides,
--- so `<name>` in a code span or a fence and a plain "a < b" do not
--- count. Should the parser fail, the text counts as holding HTML.
+-- an HTML block, a comment, a processing instruction), which the
+-- formatted view shows only in part: the review then opens on the text
+-- view. The parse tree decides, so `<name>` in a code span or a fence and
+-- a plain "a < b" do not count. Node types are matched by prefix, so a
+-- type the grammar adds fails towards the text view. Should the parser
+-- fail, the text counts as holding HTML, with a warning in the console.
 -----------------------------------------------------------------------
-proposals.htmlNodes = {
-	HTMLTag = true, HTMLBlock = true, HTMLOpenTag = true, HTMLCloseTag = true,
-	CommentBlock = true, Comment = true, ProcessingInstruction = true,
-}
+proposals.htmlNodePrefixes = { "^HTML", "^Comment", "^ProcessingInstruction", "^CDATA" }
+
+local function isHtmlNode(kind)
+	if type(kind) ~= "string" then return false end
+	for _, prefix in ipairs(proposals.htmlNodePrefixes) do
+		if string.find(kind, prefix) then return true end
+	end
+	return false
+end
 
 function proposals.holdsHtml(text)
 	if type(text) ~= "string" then return false end
-	local function walk(node)
-		if proposals.htmlNodes[node.type] then return true end
-		for _, child in ipairs(node.children or {}) do
-			if walk(child) then return true end
-		end
-		return false
+	local found = false
+	local ok, err = pcall(function()
+		proposals.walkTree(markdown.parseMarkdown(text), function(node)
+			if isHtmlNode(node.type) then found = true end
+			return found
+		end)
+	end)
+	if not ok then
+		js.window.console.warn("proposals.holdsHtml: the parser failed, the page counts as holding HTML: " .. tostring(err))
+		return true
 	end
-	local ok, found = pcall(function() return walk(markdown.parseMarkdown(text)) end)
-	if not ok then return true end
 	return found
 end
 
@@ -1291,7 +1310,7 @@ end
 -----------------------------------------------------------------------
 function proposals.withoutRemoteImages(text)
 	local ranges = {}
-	local function walk(node)
+	proposals.walkTree(markdown.parseMarkdown(text), function(node)
 		if node.type == "Image" or node.type == "LinkReference" then
 			for _, child in ipairs(node.children or {}) do
 				if child.type == "URL" then
@@ -1301,11 +1320,9 @@ function proposals.withoutRemoteImages(text)
 					end
 				end
 			end
-			return
+			return true
 		end
-		for _, child in ipairs(node.children or {}) do walk(child) end
-	end
-	walk(markdown.parseMarkdown(text))
+	end)
 	local out, offset = {}, 1
 	for _, range in ipairs(ranges) do
 		table.insert(out, string.sub(text, offset, range.from))
