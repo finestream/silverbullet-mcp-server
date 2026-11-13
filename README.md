@@ -105,7 +105,7 @@ MCP_URL=https://mcp.example.org/mcp MCP_BEARER=… MCP_RAW_PAGE="A page with que
   MCP_WRITE_AREA="Shared/Bot/" MCP_DENIED_PAGE=CONFIG MCP_DENIED_TEXT="config.set" MCP_EXPECT_RENDER=no node scripts/acceptance.ts
 ```
 
-`MCP_SPACE` selects a space other than the user's default; `MCP_OUTSIDE_PAGE` (default `Acceptance outside`) names a page the user may not create; `MCP_REPORT_PAGE` defaults to `MCP Server`. Exit code 0 when every check passed, 1 otherwise, 2 when the test could not run.
+`MCP_SPACE` selects a space other than the user's default; `MCP_OUTSIDE_PAGE` (default `Acceptance outside`) names a page the user may not create; `MCP_REPORT_PAGE` defaults to `MCP Server` and may be a path, like the server's setting of the same name. Exit code 0 when every check passed, 1 otherwise, 2 when the test could not run.
 
 ## Configuration
 
@@ -128,7 +128,7 @@ Four files, the last optional, and a few variables. The files are re-read when t
 | `MCP_FILE_TYPES` | `.md` | The file types the server writes ([docs/security.md](docs/security.md), section 5) |
 | `MCP_SCAN_INTERVAL` | `15m` | Time between scans (`0`: at start and on `SIGHUP` only) |
 | `MCP_SCAN_MODE` | `report` | `report` or `quarantine` ([docs/security.md](docs/security.md), section 7) |
-| `MCP_REPORT_PAGE` | `MCP Server` | The report page, written at the top level of every guarded space ([docs/security.md](docs/security.md), section 8) |
+| `MCP_REPORT_PAGE` | `MCP Server` | The report page of every guarded space, written at this page name; a path such as `Space/MCP Server` puts it in a folder ([docs/security.md](docs/security.md), section 8) |
 | `MCP_RATE_LIMIT` | `120` | Tool calls per user and minute; `0` for none |
 | `MCP_RENDER_PARALLEL` | `4` | Runtime API calls in flight at once, over all users and spaces (*Rendering* below) |
 | `MCP_RENDER_TIMEOUT` | `90s` | The most a `render-note` or `screenshot-note` call may take, queue and index wait included |

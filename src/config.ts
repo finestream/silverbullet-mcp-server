@@ -22,7 +22,7 @@ export type Config = {
   /** Milliseconds between scans; 0 means no scheduled scan (the start scan still runs). */
   scanInterval: number;
   scanMode: ScanMode;
-  /** The report page, written at the top level of every guarded space. */
+  /** The report page of every guarded space: a page name or a path (`Space/MCP Server`), without leading slash or `.md`. */
   reportPage: string;
   /** The technical user of the scan (docs/security.md, section 7): the credentials-file line that holds the scan's token. */
   scanUser: string;
@@ -47,6 +47,7 @@ export const DEFAULT_FILE_TYPES = [".md"];
 
 /** The name of the scan's technical user unless `MCP_SCAN_USER` says otherwise. */
 export const DEFAULT_SCAN_USER = "scan";
+const DEFAULT_REPORT_PAGE = "MCP Server";
 
 /** Types SilverBullet executes or serves as code; they can never be written through the server. */
 export const NEVER_WRITTEN_TYPES = [".plug.js", ".js", ".mjs", ".cjs", ".html", ".htm", ".xhtml", ".svg", ".lua"];
@@ -63,7 +64,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     fileTypes: parseFileTypes(env.MCP_FILE_TYPES ?? DEFAULT_FILE_TYPES.join(",")),
     scanInterval: parseDuration("MCP_SCAN_INTERVAL", set(env.MCP_SCAN_INTERVAL) ?? "15m"),
     scanMode: env.MCP_SCAN_MODE === "quarantine" ? "quarantine" : "report",
-    reportPage: env.MCP_REPORT_PAGE ?? "MCP Server",
+    reportPage: parseReportPage(env.MCP_REPORT_PAGE),
     scanUser: env.MCP_SCAN_USER?.trim() || DEFAULT_SCAN_USER,
     spaces: (env.MCP_SPACES ?? "").split(",").map((s) => s.trim().replace(/^\//, "")).filter(Boolean),
     rateLimit: parseCount("MCP_RATE_LIMIT", set(env.MCP_RATE_LIMIT) ?? "120", 0),
@@ -79,6 +80,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 /** The value, or undefined when it is unset or blank: compose passes an unset `${VAR}` as an empty string, which means the default. */
 function set(value: string | undefined): string | undefined {
   return value?.trim() ? value : undefined;
+}
+
+/** The report page name: trimmed, without leading slashes or a trailing `.md` (the scan adds it); blank means the default. */
+export function parseReportPage(text: string | undefined): string {
+  return (text ?? "").trim().replace(/^\/+/, "").replace(/\.md$/, "").trim() || DEFAULT_REPORT_PAGE;
 }
 
 export function parseFileTypes(text: string): string[] {

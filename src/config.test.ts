@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig, parseCount, parseDuration, DEFAULT_SCAN_USER } from "./config.ts";
+import { loadConfig, parseReportPage, parseCount, parseDuration, DEFAULT_SCAN_USER } from "./config.ts";
 
 test("the scan's technical user is `scan` unless MCP_SCAN_USER names another", () => {
   assert.equal(loadConfig({}).scanUser, "scan");
@@ -42,4 +42,14 @@ test("a duration that is not one, or out of range, stops the start, naming the v
   assert.throws(() => loadConfig({ MCP_SCAN_INTERVAL: "15 min" }), /MCP_SCAN_INTERVAL must be a duration .*500ms.*not "15 min"/);
   assert.throws(() => loadConfig({ MCP_SCAN_INTERVAL: "30d" }), /MCP_SCAN_INTERVAL .*at most 24 days/, "a timer would fire after 1 ms");
   assert.throws(() => loadConfig({ MCP_INDEX_WAIT: "-1s" }), /MCP_INDEX_WAIT/);
+});
+
+test("the report page is a page name or a path, normalised: no leading slash, no .md, blank means the default", () => {
+  assert.equal(loadConfig({}).reportPage, "MCP Server");
+  assert.equal(loadConfig({ MCP_REPORT_PAGE: "Space/MCP Server" }).reportPage, "Space/MCP Server");
+  assert.equal(parseReportPage("  /Space/MCP Server.md "), "Space/MCP Server");
+  assert.equal(parseReportPage("//Report"), "Report");
+  assert.equal(parseReportPage(""), "MCP Server");
+  assert.equal(parseReportPage("/"), "MCP Server");
+  assert.equal(parseReportPage(".md"), "MCP Server");
 });

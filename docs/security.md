@@ -179,7 +179,7 @@ The server runs the filter of section 5 over every page outside `CONFIG` and `Li
 
 ## 8. The report page
 
-A page in every guarded space, path configurable (`MCP_REPORT_PAGE`), default top-level `MCP Server`, written by the technical user, for the operator to read and act on:
+A page in every guarded space, written by the technical user at the page name `MCP_REPORT_PAGE` (default `MCP Server`, at the top level; a value with slashes, such as `Space/MCP Server`, is a path, and the page is written in that folder and nowhere else), for the operator to read and act on:
 
 * findings of the last scan: page, line, rule, reason; non-page files outside the allow entries; pages quarantined in that run;
 * server state: serving or refusing and why; rendering available or blocked; last scan time; allowlist and transform check results; settings weaker than the shipped defaults (section 11);
