@@ -6,7 +6,8 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { startServer, connect, BEARERS, DEFAULT_ACCESS_LIST, unique, type RunningServer, type McpClient } from "./harness.ts";
+import { startServer, connect, credentialsFile, BEARERS, DEFAULT_ACCESS_LIST, unique, type RunningServer, type McpClient } from "./harness.ts";
+import { navigateScript } from "../../src/render.ts";
 import { sb, T, SB_URL } from "../lib/env.ts";
 
 const RENDER_ACCESS =
@@ -382,5 +383,126 @@ test("render check: a page written by another route that transcludes CONFIG is r
     assert.equal(clean.data!.loaded, 2, "Rendered and Projects/One");
   } finally {
     await sb.remove(T.admin, "gamma", `${name}.md`);
+  }
+});
+
+/**
+ * The row filter (docs/security.md, section 12): alice may render gamma but not read `Hidden/`;
+ * `Hidden/Render…` she may render and not read. The denied page is written as admin, so the
+ * runtime learns about it when it syncs: the tests reboot alice's runtime, which re-indexes the
+ * space, and wait for it to hold the page, so that a missing row means a filtered one.
+ */
+const ROW_ACCESS = (render: string) => `${RENDER_ACCESS}alice gamma Hidden/ -\nalice gamma ${render} x\n`;
+const indexed = async (page: string) => {
+  await sb.lua(T.alice, "gamma", "system.reboot() return true");
+  await sb.runtimeReady(T.alice, "gamma");
+  for (let i = 0; i < 120; i++) {
+    const r = await sb.lua(T.alice, "gamma", `return index.getObjectByRef(${JSON.stringify(page)}, "page", ${JSON.stringify(page)}) ~= nil and #query[[from r = index.relations() where r.page == ${JSON.stringify(page)}]] > 0`);
+    if (r.result === true) return quiet();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  assert.fail(`alice's runtime never indexed ${page}`);
+};
+/** After the reboot the client keeps reading pages for a while; a read of the denied page inside a render's window refuses it (the render check). */
+const quiet = async () => {
+  const reads = `return js.window.eval("(() => { const n = performance.getEntriesByType('resource').filter((e) => e.name.includes('/.fs/')).length; performance.clearResourceTimings(); return n; })()")`;
+  let still = 0;
+  for (let i = 0; i < 60 && still < 3; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    still = (await sb.lua(T.alice, "gamma", reads)).result === 0 ? still + 1 : 0;
+  }
+};
+
+test("row filter: render-note hides the denied page's tasks, items, headers, pages, tagged objects, object and anchor; the rendered page keeps its own rows; other pages are unchanged", async () => {
+  const id = unique("x").split(" ")[1];
+  const hidden = `Hidden/Secret ${id}`;
+  const render = `Hidden/Render ${id}`;
+  const shown = track(`Projects/Shown ${id}`);
+  const anchor = `sbmcp_${id}`;
+  const s = await startServer({ accessList: ROW_ACCESS(render) });
+  const a = await connect(s.url, BEARERS.alice);
+  try {
+    await sb.write(T.admin, "gamma", `${hidden}.md`, `---\ntags: project\n$ref: ${anchor}\n---\n# Heading ${id} hidden\n\n* [ ] task ${id} hidden\n* item ${id} hidden\n\nSee [[${shown}]].\n`);
+    const c = await a.call("create-note", { space: "gamma", filename: shown, content: `---\ntags: project\n---\n# Heading ${id} shown\n\n* [ ] task ${id} shown\n* item ${id} shown\n` });
+    assert.equal(c.isError, false, c.text);
+    const q = (fn: string) => `\${query[[from o = ${fn} where string.find(o.name, "${id}", 1, true) ~= nil select o.name]]}`;
+    await sb.write(
+      T.admin,
+      "gamma",
+      `${render}.md`,
+      `* [ ] task ${id} own\n\nTasks: ${q("index.tasks()")}\n\nItems: ${q("index.items()")}\n\nHeaders: ${q("index.headers()")}\n\nTagged: ${q('index.tag "task"')}\n\nPages: \${query[[from p = index.pages() where string.find(p.name, "${id}", 1, true) ~= nil select p.name]]}\n\nProjects: \${query[[from p = index.tag "project" where string.find(p.name, "${id}", 1, true) ~= nil select p.name]]}\n\nByRef: \${index.getObjectByRef("${hidden}", "page", "${hidden}") == nil}\n\nAnchor: \${query[[from a = {index.resolveAnchor("${anchor}")} where a.ok select "anchor found"]]}\n`,
+    );
+    await indexed(hidden);
+    await s.rescan();
+    const r = await a.call("render-note", { space: "gamma", filename: render });
+    assert.equal(r.isError, false, r.text);
+    const md = r.data!.content as string;
+    assert.doesNotMatch(md, /hidden/, `no row of the denied page:\n${md}`);
+    assert.doesNotMatch(md, new RegExp(`Hidden/Secret ${id}`), "neither its page row");
+    for (const what of ["task", "item", "Heading"]) assert.match(md, new RegExp(`${what} ${id} shown`), `the ${what} of the allowed page stays`);
+    assert.match(md, new RegExp(`Tasks:[^\\n]*\\n*[\\s\\S]*task ${id} own`), "the rendered page keeps its own rows (x suffices)");
+    assert.match(md, new RegExp(`Projects:[\\s\\S]*Projects/Shown ${id}`));
+    assert.match(md, /ByRef: true/, "getObjectByRef finds nothing on the denied page");
+    assert.doesNotMatch(md, /anchor found/, "resolveAnchor misses the denied page's anchor");
+    // The filter is gone after the call: the same runtime, called directly, sees the rows again.
+    const direct = await sb.lua(T.alice, "gamma", `return #query[[from t = index.tasks() where t.page == ${JSON.stringify(hidden)}]]`);
+    assert.equal(direct.result, 1, "the originals are restored");
+    const resolved = await sb.lua(T.alice, "gamma", `return index.resolveAnchor(${JSON.stringify(anchor)}).ok`);
+    assert.equal(resolved.result, true, "the anchor resolves without the filter (positive control)");
+    assert.ok(s.logs.some((l) => l.includes('"event":"render"') && l.includes('"rowFilter":true')), "the log says the filter was on");
+  } finally {
+    await a.close();
+    await s.stop();
+    await sb.remove(T.admin, "gamma", `${hidden}.md`);
+    await sb.remove(T.admin, "gamma", `${render}.md`);
+  }
+});
+
+test("row filter: screenshot-note hides the denied page's mention in Linked Mentions and its row in a query; the allowed page's mention shows", async () => {
+  const id = unique("x").split(" ")[1];
+  const hidden = `Hidden/Mention ${id}`;
+  const target = track(`Projects/Target ${id}`);
+  const shown = track(`Projects/Mention ${id}`);
+  const s = await startServer({ accessList: ROW_ACCESS(`Hidden/Render ${id}`) });
+  const a = await connect(s.url, BEARERS.alice);
+  try {
+    await sb.write(T.admin, "gamma", `${hidden}.md`, `* [ ] task ${id} hidden [[${target}]]\n\nMentions [[${target}]] hidden.\n`);
+    for (const [name, content] of [
+      [target, `Target.\n\n\${template.each(query[[from t = index.tasks() where string.find(t.name, "${id}", 1, true) ~= nil]], templates.taskItem)}\n`],
+      [shown, `* [ ] task ${id} shown\n\nMentions [[${target}]] openly.\n`],
+    ]) {
+      const c = await a.call("create-note", { space: "gamma", filename: name, content });
+      assert.equal(c.isError, false, c.text);
+    }
+    await indexed(hidden);
+    const control = await a.call("screenshot-note", { space: "gamma", filename: target, selector: `#sb-main a[data-ref^="${shown}@"]` });
+    assert.equal(control.isError, false, `the allowed page's mention and task show (positive control): ${control.text}`);
+    for (const selector of [`a[data-ref^="${hidden}@"]`, `a[data-ref^="${hidden}"]`]) {
+      const shot = await a.call("screenshot-note", { space: "gamma", filename: target, selector });
+      assert.equal(shot.isError, true, `${selector}: ${shot.text}`);
+      assert.match(shot.text, /no visible element matches the selector/);
+    }
+  } finally {
+    await a.close();
+    await s.stop();
+    await sb.remove(T.admin, "gamma", `${hidden}.md`);
+  }
+});
+
+test("row filter: none without a denial; a filter left behind by an interrupted call is removed by the next one", async () => {
+  const s = await startServer({ credentials: credentialsFile({ groups: { alice: "-" } }), accessList: "alice gamma / rwx\n" });
+  const a = await connect(s.url, BEARERS.alice);
+  try {
+    // An interrupted call: the filter installed with rules that deny everything, never restored.
+    const left = await sb.lua(T.alice, "gamma", `${navigateScript("Rendered", { exact: new Map(), folders: new Map(), root: false }).replace(/editor\.navigate[\s\S]*$/, "")}return #query[[from t = index.tasks()]]`);
+    assert.equal(left.result, 0, "the filter left behind hides every row");
+    const r = await a.call("render-note", { space: "gamma", filename: "Rendered" });
+    assert.equal(r.isError, false, r.text);
+    assert.match(r.data!.content, /Task one of project one/, "the next call without a denial restores the originals first");
+    const line = s.logs.map((l) => { try { return JSON.parse(l); } catch { return null; } }).find((l) => l?.event === "render");
+    assert.equal(line?.rowFilter, false, "no filter installed");
+  } finally {
+    await a.close();
+    await s.stop();
   }
 });

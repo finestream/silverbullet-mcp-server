@@ -14,7 +14,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { AccessList, Right, Rights, Subject } from "./access.ts";
-import { pageNameOf, renderersWithoutRead, rightsText } from "./access.ts";
+import { pageNameOf, renderersWithoutRead, rightsText, rowRules } from "./access.ts";
 import type { Allowlist } from "./filter/allowlist.ts";
 import { describe, isCodePlace, TRANSCLUSION_RULE, type Verdict } from "./filter/filter.ts";
 import { checkPageLimited, CheckTimeout } from "./filter/check.ts";
@@ -879,8 +879,9 @@ export function registerTools(server: McpServer, ctx: Context) {
     };
 
   const RENDER_COMMON = "Needs the x right; pages (.md) only; refused while the scan has findings in the space. For reading only: it returns no revision; edits are always based on read-note's source and its revision. The first call starts a headless browser for this user and space inside SilverBullet (about 200 MiB, kept until SilverBullet restarts), later calls are fast. Runs with the user's full SilverBullet rights;";
-  const RENDER_RULES = `${RENDER_COMMON} the result is refused when the render loaded a page or file (a transclusion, an image) the user has no r on in the access list. Query results come from SilverBullet's index and are not checked.`;
-  const SCREENSHOT_RULES = `${RENDER_COMMON} the result is refused when the page shows a page or other file (a transclusion) the user has no r on in the access list. A font, stylesheet or image the user has no r on is left out instead, with a warning: a substitute font, SilverBullet's default theme (space styles off) or a placeholder image. Query results come from SilverBullet's index and are not checked.`;
+  const QUERY_RULES = "Query results come from SilverBullet's index; rows of pages the user has no r on are left out, best-effort (code in Library/ can read the index past the filter).";
+  const RENDER_RULES = `${RENDER_COMMON} the result is refused when the render loaded a page or file (a transclusion, an image) the user has no r on in the access list. ${QUERY_RULES}`;
+  const SCREENSHOT_RULES = `${RENDER_COMMON} the result is refused when the page shows a page or other file (a transclusion) the user has no r on in the access list. A font, stylesheet or image the user has no r on is left out instead, with a warning: a substitute font, SilverBullet's default theme (space styles off) or a placeholder image. ${QUERY_RULES}`;
 
   server.registerTool(
     "render-note",
@@ -895,7 +896,7 @@ export function registerTools(server: McpServer, ctx: Context) {
     },
     tool("render-note", async ({ space: sp, filename }) => {
       const { s, file, page } = await renderable(sp, filename);
-      const r = await renderer.render(user, s, page, verifyLoads(s, file));
+      const r = await renderer.render(user, s, page, verifyLoads(s, file), rowRules(acl, user.user, user.groups, s));
       const data = { space: s, filename: file, content: r.markdown, totalCharacters: r.markdown.length, loaded: r.loaded, warnings: r.warnings, queuedMs: r.queuedMs, indexWaitMs: r.indexWaitMs, rebooted: r.rebooted };
       return result(data, r.markdown + (r.warnings.length ? `\n\n[Warning: ${r.warnings.join(" ")}]` : ""));
     }),
@@ -916,7 +917,7 @@ export function registerTools(server: McpServer, ctx: Context) {
     },
     tool("screenshot-note", async ({ space: sp, filename, selector, fullPage }) => {
       const { s, file, page } = await renderable(sp, filename);
-      const r = await renderer.screenshot(user, s, page, { selector, fullPage }, verifyScreen(s, file));
+      const r = await renderer.screenshot(user, s, page, { selector, fullPage }, verifyScreen(s, file), rowRules(acl, user.user, user.groups, s));
       const data = { space: s, filename: file, mimeType: "image/png", bytes: r.png.length, width: r.width, height: r.height, selector: selector ?? null, fullPage, loaded: r.loaded, redacted: r.redacted, warnings: r.warnings, queuedMs: r.queuedMs, indexWaitMs: r.indexWaitMs, rebooted: r.rebooted };
       return {
         content: [

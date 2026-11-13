@@ -5,7 +5,8 @@ import { Log } from "./log.ts";
 import type { Config } from "./config.ts";
 import type { Credential } from "./credentials.ts";
 import type { SilverBullet } from "./sb.ts";
-import { assetKind, BLANK_PAGE, CURRENT_PAGE_SCRIPT, INSPECT_SCRIPT, LOADS_SCRIPT, Renderer, type VerifyScreen, judgeLoads, judgeScreen, jsEval, loadedPath, LOADS_BUFFER, luaString, navigateScript, parseLoads, parseRedaction, parseUses, redactionWarnings, redactScript, renderScript, RESTORE_SCRIPT, UNDO_SCRIPT, type Seen } from "./render.ts";
+import { SHIPPED_ALLOWLIST } from "./filter/allowlist.ts";
+import { assetKind, BLANK_PAGE, indexCheckScript, NO_PAGE_DATA, OBJECT_FUNCTIONS, ROW_FUNCTIONS, rowRulesLua, CURRENT_PAGE_SCRIPT, INSPECT_SCRIPT, LOADS_SCRIPT, Renderer, type VerifyScreen, judgeLoads, judgeScreen, jsEval, loadedPath, LOADS_BUFFER, luaString, navigateScript, parseLoads, parseRedaction, parseUses, redactionWarnings, redactScript, renderScript, RESTORE_SCRIPT, UNDO_SCRIPT, type Seen } from "./render.ts";
 
 test("loads: a resource-timing URL of the space's file API becomes the file's path, decoded; everything else is ignored", () => {
   assert.equal(loadedPath("http://silverbullet:3000/gamma/.fs/Projects/One.md", "gamma"), "Projects/One.md");
@@ -62,6 +63,29 @@ test("scripts: the render and navigate scripts start the resource timing before 
   assert.ok(navigate.indexOf("clearResourceTimings") < navigate.indexOf("editor.navigate"), "timing cleared before the navigation");
   assert.match(RESTORE_SCRIPT, new RegExp(`editor\\.navigate\\(\\[\\[\\n${BLANK_PAGE}\\]\\]\\)`));
   assert.equal(luaString("a]]b"), "[=[\na]]b]=]");
+  assert.equal(luaString("a]"), "[=[\na]]=]", "a closing bracket at the end does not close the literal");
+});
+
+test("row filter: every index function of the shipped allowlist is filtered or classified as carrying no page data, once", () => {
+  const allowlisted = SHIPPED_ALLOWLIST.filter((n) => n.startsWith("index.")).map((n) => n.slice("index.".length)).sort();
+  const classified = [...ROW_FUNCTIONS, ...OBJECT_FUNCTIONS, ...NO_PAGE_DATA];
+  assert.equal(new Set(classified).size, classified.length, "no function in two lists");
+  assert.deepEqual([...classified].sort(), allowlisted);
+});
+
+test("row filter: the rules travel as Lua tables with the rendered page; none without rules; the scripts install it after the shadow and restore it", () => {
+  assert.equal(rowRulesLua(null, "P"), "nil");
+  const rules = { exact: new Map([["CONFIG", false]]), folders: new Map([["Library/", false], ["Library/Open/", true]]), root: true };
+  assert.equal(rowRulesLua(rules, "Notes/P"), "{exact = {[([[\nCONFIG]])] = false}, folders = {[([[\nLibrary/]])] = false, [([[\nLibrary/Open/]])] = true}, root = true, own = [[\nNotes/P]]}");
+  const render = renderScript("Notes/P", rules);
+  assert.ok(render.indexOf("sbmcp_shadow()\nsbmcp_rows({exact") > 0, "installed with the shadow");
+  assert.ok(render.indexOf("sbmcp_rows(") < render.indexOf("clearResourceTimings"), "before the page is read");
+  assert.match(renderScript("Notes/P"), /\nsbmcp_rows\(nil\)\n/, "no rules: shims left behind are restored, none installed");
+  assert.match(navigateScript("Notes/P", rules), /sbmcp_shadow\(\)\nsbmcp_rows\(\{exact = [\s\S]*\}\)\njs\.window\.eval[\s\S]*editor\.navigate/);
+  for (const f of [...ROW_FUNCTIONS, ...OBJECT_FUNCTIONS]) assert.ok(render.includes(`"${f}"`) || render.includes(`index.${f} = function`), `${f} is shimmed`);
+  for (const f of NO_PAGE_DATA) assert.ok(!render.includes(`"${f}"`), `${f} is left alone`);
+  assert.match(RESTORE_SCRIPT, /for f, fn in pairs\(_G\.__sbmcp_index_saved\) do index\[f\] = fn end/, "the restore puts the originals back");
+  assert.match(indexCheckScript(["A"]), /\(_G\.__sbmcp_index_saved or \{\}\)\.getObjectByRef or index\.getObjectByRef/, "the index check reads past a filter left behind");
 });
 
 test("loads: the initiators tell what the document fetched to show it from the client's own reads", () => {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { compileAccessList, parseAccessList, renderersWithoutRead, rendersWithDenials, rightsText } from "./access.ts";
+import { compileAccessList, parseAccessList, renderersWithoutRead, rendersWithDenials, rightsText, rowRules, ruleAllows } from "./access.ts";
 
 const LIST = `
 # user-or-group  space    path            rights
@@ -127,4 +127,61 @@ test("access: a user with x on one path and no r on another is reported per spac
   // x everywhere and no denial: nothing to report
   const open = compileAccessList(parseAccessList("reader * / rx\n").entries);
   assert.deepEqual(rendersWithDenials(open, SUBJECTS), []);
+});
+
+test("row rules: the lookup of the render script's row filter agrees with acl.rights on every generated name, for users, groups, `-` between groups and `*`", () => {
+  const list = compileAccessList(
+    parseAccessList(`
+@agents notes /               r
+@agents notes CONFIG          -
+@agents notes Library/        -
+@agents notes Library/Public/ r
+@agents notes Library/Public/Secret -
+@ops    notes Shared/         -
+@agents notes Shared/         r
+bot     notes Shared/         rx
+bot     notes Shared/Deep/    -
+bot     notes Shared/Deep/Open r
+@agents *     Elsewhere/      -
+narrow  notes Drafts/         rx
+`).entries,
+  );
+  const segments = ["CONFIG", "Library", "Public", "Secret", "Shared", "Deep", "Open", "Drafts", "Elsewhere", "Other"];
+  const names = new Set<string>();
+  for (const a of segments) {
+    names.add(a);
+    for (const b of segments) {
+      names.add(`${a}/${b}`);
+      for (const c of segments) names.add(`${a}/${b}/${c}`);
+    }
+  }
+  const subjects = [
+    { user: "bot", groups: ["agents"] },
+    { user: "bot", groups: ["agents", "ops"] },
+    { user: "other", groups: ["agents", "ops"] },
+    { user: "other", groups: ["agents"] },
+    { user: "narrow", groups: [] },
+  ];
+  for (const s of subjects) {
+    const rules = rowRules(list, s.user, s.groups, "notes");
+    assert.ok(rules, `${s.user} ${s.groups.join(",")}: there is something to hide`);
+    for (const n of names) assert.equal(ruleAllows(rules!, n), list.rights(s.user, s.groups, "notes", `${n}.md`).has("r"), `${s.user} (${s.groups.join(",")}) on ${n}`);
+  }
+});
+
+test("row rules: none when the user may read every path they reach; a folder entry covers the page of its name; an exact entry wins", () => {
+  assert.equal(rowRules(compileAccessList(parseAccessList("bot notes / rx\nbot notes Shared/ rw\n").entries), "bot", [], "notes"), null);
+  const rules = rowRules(compileAccessList(parseAccessList("bot notes / r\nbot notes Hidden/ -\nbot notes Hidden/Open r\n").entries), "bot", [], "notes")!;
+  assert.deepEqual([...rules.folders], [["Hidden/", false]]);
+  assert.deepEqual([...rules.exact], [["Hidden/Open", true]]);
+  assert.equal(rules.root, true);
+  assert.equal(ruleAllows(rules, "Hidden"), false, "Hidden/ covers the page Hidden");
+  assert.equal(ruleAllows(rules, "Hidden/Open"), true);
+  assert.equal(ruleAllows(rules, "Hidden/Open/Sub"), false, "an exact entry does not cover the folder of the same name");
+  assert.equal(ruleAllows(rules, "HiddenNot"), true);
+  // deny by default: no entry for the rest of the space
+  const narrow = rowRules(compileAccessList(parseAccessList("bot notes Drafts/ rx\n").entries), "bot", [], "notes")!;
+  assert.equal(narrow.root, false);
+  assert.equal(ruleAllows(narrow, "Drafts/One"), true);
+  assert.equal(ruleAllows(narrow, "index"), false);
 });

@@ -20,6 +20,7 @@ import type { Credential } from "./credentials.ts";
 import type { State, RuntimeInfo } from "./state.ts";
 import type { Config } from "./config.ts";
 import type { Log } from "./log.ts";
+import type { RowRules } from "./access.ts";
 
 export type RenderDeps = { sb: SilverBullet; state: State; config: Config; log: Log };
 
@@ -33,7 +34,8 @@ export class RenderTimeout extends Error {
 /** A Lua long-bracket string literal that cannot be closed by its content. */
 export function luaString(s: string): string {
   let level = 0;
-  while (s.includes("]" + "=".repeat(level) + "]")) level++;
+  // A closing `]` at the end would meet the bracket that closes the literal.
+  while (s.includes("]" + "=".repeat(level) + "]") || s.endsWith("]" + "=".repeat(level))) level++;
   const eq = "=".repeat(level);
   return `[${eq}[\n${s}]${eq}]`; // Lua drops a newline right after the opening bracket
 }
@@ -462,7 +464,117 @@ local function sbmcp_restore()
     for f, fn in pairs(_G.__sbmcp_saved) do space[f] = fn end
     _G.__sbmcp_saved = nil
   end
+  if _G.__sbmcp_index_saved ~= nil then
+    for f, fn in pairs(_G.__sbmcp_index_saved) do index[f] = fn end
+    _G.__sbmcp_index_saved = nil
+  end
+  _G.__sbmcp_rules = nil
 end`;
+
+/**
+ * The reading functions of `index` on the shipped allowlist, by what the row filter does with
+ * them (docs/security.md, section 12). Every `index.*` entry of the allowlist is in one of the
+ * three lists; a unit test and a release check hold them to that.
+ */
+export const ROW_FUNCTIONS = ["pages", "contentPages", "metaPages", "subPages", "documents", "items", "tasks", "headers", "paragraphs", "tables", "links", "relations", "aspiringPages", "tags", "tag", "objects"];
+/** Functions that return one object: `nil`, or a miss, when its page is denied. `resolveAnchor` reads the index on its own, past the shim of `tag`. */
+export const OBJECT_FUNCTIONS = ["getObjectByRef", "resolveAnchor"];
+/** Functions that return no page data (schemas, definitions, a boolean, the parse of a given text): not filtered. */
+export const NO_PAGE_DATA = ["describeSchema", "tagSchema", "aggregates", "isAvailable", "extractFrontmatter"];
+
+/**
+ * The row filter: replaces the functions above with shims that keep only rows whose page the
+ * caller may read, by the rules of `rowRules` plus the rendered page itself (`own`). Shims left
+ * behind by an interrupted call are restored first, so the originals are never a shim; without
+ * rules nothing is installed. Inline attributes set `page`, `name`, `ref` and `tag` on an object
+ * (measured on 2.12.1), so the page of a row is: the `name` of a page or document whose `ref` is
+ * that name; else the page part of a `page@pos` ref, the row dropped when its `page` differs; else
+ * `page` (anchors, anchored objects, tag rows: one attribute can set it there). A row without a
+ * page, and a page or document row that fits neither, is dropped. The shims read
+ * the rules from `_G` at call time, and with no rules they deny: a call that sets none restores
+ * the functions before clearing them. Called after `SHADOW`, whose restore undoes this too.
+ */
+export const ROW_FILTER = `
+local function sbmcp_may(p)
+  local r = _G.__sbmcp_rules
+  if r == nil or type(p) ~= "string" then return false end
+  if p == r.own then return true end
+  local v = r.exact[p]
+  if v ~= nil then return v end
+  local q = p
+  while true do
+    v = r.folders[q .. "/"]
+    if v ~= nil then return v end
+    local i = string.find(q, "/[^/]*$")
+    if i == nil then break end
+    q = string.sub(q, 1, i - 1)
+  end
+  return r.root
+end
+local function sbmcp_page(o)
+  if type(o) ~= "table" then return nil end
+  local paged = o.tag == "page" or o.tag == "document"
+  if paged and type(o.name) == "string" and o.ref == o.name then return o.name end
+  local fromRef = nil
+  if type(o.ref) == "string" then fromRef = string.match(o.ref, "^(.*)@%d+$") end
+  if fromRef ~= nil then
+    if o.page ~= nil and o.page ~= fromRef then return nil end
+    return fromRef
+  end
+  if paged or type(o.page) ~= "string" then return nil end
+  return o.page
+end
+local function sbmcp_rows(rules)
+  if _G.__sbmcp_index_saved ~= nil then
+    for f, fn in pairs(_G.__sbmcp_index_saved) do index[f] = fn end
+    _G.__sbmcp_index_saved = nil
+  end
+  _G.__sbmcp_rules = rules
+  if rules == nil then return end
+  local saved = {}
+  for _, f in ipairs({${ROW_FUNCTIONS.map((f) => JSON.stringify(f)).join(", ")}}) do
+    local orig = index[f]
+    saved[f] = orig
+    index[f] = function(...)
+      local rows = orig(...)
+      return query[[from o = rows where sbmcp_may(sbmcp_page(o))]]
+    end
+  end
+  local getObjectByRef = index.getObjectByRef
+  saved.getObjectByRef = getObjectByRef
+  index.getObjectByRef = function(...)
+    local o = getObjectByRef(...)
+    if o ~= nil and not sbmcp_may(sbmcp_page(o)) then return nil end
+    return o
+  end
+  local resolveAnchor = index.resolveAnchor
+  saved.resolveAnchor = resolveAnchor
+  index.resolveAnchor = function(...)
+    local a = resolveAnchor(...)
+    if type(a) ~= "table" then return a end
+    if a.ok then
+      if sbmcp_may(a.page) then return a end
+      return {ok = false, reason = "missing"}
+    end
+    if a.hits ~= nil then
+      local kept = {}
+      for _, h in ipairs(a.hits) do
+        if sbmcp_may(h.page) then kept[#kept + 1] = h end
+      end
+      if #kept == 0 then return {ok = false, reason = "missing"} end
+      return {ok = false, reason = a.reason, hits = kept}
+    end
+    return a
+  end
+  _G.__sbmcp_index_saved = saved
+end`;
+
+/** The rules of the row filter and the rendered page as a Lua table, or `nil`: no filter. */
+export function rowRulesLua(rules: RowRules | null, page: string): string {
+  if (!rules) return "nil";
+  const table = (m: Map<string, boolean>) => `{${[...m].map(([k, v]) => `[(${luaString(k)})] = ${v}`).join(", ")}}`;
+  return `{exact = ${table(rules.exact)}, folders = ${table(rules.folders)}, root = ${rules.root}, own = ${luaString(page)}}`;
+}
 
 /**
  * The render script of the spike: `markdown.expandMarkdown` of the page's source, with the
@@ -470,10 +582,11 @@ end`;
  * release); when the instance ignores it, `_CTX` is set by hand around the call (2.12.1 sets
  * none inside `expandMarkdown`), which is why calls on one runtime are serialised.
  */
-export function renderScript(page: string): string {
-  return `${SHADOW}
+export function renderScript(page: string, rules: RowRules | null = null): string {
+  return `${SHADOW}${ROW_FILTER}
 local name = ${luaString(page)}
 sbmcp_shadow()
+sbmcp_rows(${rowRulesLua(rules, page)})
 ${LOADS_BEGIN}
 local ok, result = pcall(function()
   local text = space.readPage(name)
@@ -496,12 +609,15 @@ return result`;
 }
 
 /**
- * Shadows the writing functions, starts the resource timing and shows the page in the runtime's
- * editor; the loads are then read until they settle, and the screenshot follows as a separate request.
+ * Shadows the writing functions, installs the row filter, starts the resource timing and shows the
+ * page in the runtime's editor; the loads are then read until they settle, and the screenshot
+ * follows as a separate request. Widgets that query the index while the page is shown (Linked
+ * Mentions) go through the row filter, which stays until `RESTORE_SCRIPT`.
  */
-export function navigateScript(page: string): string {
-  return `${SHADOW}
+export function navigateScript(page: string, rules: RowRules | null = null): string {
+  return `${SHADOW}${ROW_FILTER}
 sbmcp_shadow()
+sbmcp_rows(${rowRulesLua(rules, page)})
 ${LOADS_BEGIN}
 editor.navigate(${luaString(page)})
 return editor.getCurrentPage()`;
@@ -513,7 +629,7 @@ return editor.getCurrentPage()`;
 export const CURRENT_PAGE_SCRIPT = `return editor.getCurrentPage()`;
 /** The current page and what the client has loaded since the timing began. */
 export const LOADS_SCRIPT = `return {page = editor.getCurrentPage(), loads = ${LOADS_READ}}`;
-/** Undoes the redactions of a screenshot, restores the writing functions and parks the runtime on the blank page. */
+/** Undoes the redactions of a screenshot, restores the writing functions and the index, and parks the runtime on the blank page. */
 export const RESTORE_SCRIPT = `${SHADOW}
 pcall(function() ${jsEval(UNDO_JS)} end)
 sbmcp_restore()
@@ -523,14 +639,16 @@ return true`;
 /**
  * Which of the pages are not current in the runtime's index: the page object's `lastModified`
  * differs from the file's (both formatted by the client, so they are compared as they are),
- * or a deleted page still has an object.
+ * or a deleted page still has an object. Reads through the original `getObjectByRef` when an
+ * interrupted call left the row filter behind, so that a denied page does not read as stale.
  */
 export function indexCheckScript(pages: string[]): string {
   return `local pages = {${pages.map(luaString).join(", ")}}
+local getObjectByRef = (_G.__sbmcp_index_saved or {}).getObjectByRef or index.getObjectByRef
 local stale = {}
 for _, name in ipairs(pages) do
   local ok, meta = pcall(space.getPageMeta, name)
-  local o = index.getObjectByRef(name, "page", name)
+  local o = getObjectByRef(name, "page", name)
   if ok and meta ~= nil then
     if o == nil or o.lastModified ~= meta.lastModified then stale[#stale + 1] = name end
   elseif o ~= nil then
@@ -617,10 +735,13 @@ export class Renderer {
     this.gate = new Semaphore(Math.max(1, d.config.renderParallel));
   }
 
-  /** Renders the page; `verify` sees what the expansion loaded and refuses by throwing, before the Markdown is returned. */
-  render(user: Credential, space: string, page: string, verify: VerifyLoads): Promise<RenderResult> {
-    return this.onRuntime(user, space, async (rt) => {
-      const r = (await rt.lua(renderScript(page))) as { markdown?: unknown; shim?: unknown; loads?: unknown };
+  /**
+   * Renders the page; `verify` sees what the expansion loaded and refuses by throwing, before the
+   * Markdown is returned. `rows`: the rules of the row filter, null for none.
+   */
+  render(user: Credential, space: string, page: string, verify: VerifyLoads, rows: RowRules | null = null): Promise<RenderResult> {
+    return this.onRuntime(user, space, rows !== null, async (rt) => {
+      const r = (await rt.lua(renderScript(page, rows))) as { markdown?: unknown; shim?: unknown; loads?: unknown };
       if (!r || typeof r.markdown !== "string") throw new Error("the render script returned no Markdown");
       const loads = parseLoads(r.loads, space);
       verify(loads);
@@ -636,8 +757,8 @@ export class Renderer {
    * blank page before (when it shows anything else) and after, so that fetches of the page shown
    * before land outside the capture window; the redactions are undone afterwards.
    */
-  screenshot(user: Credential, space: string, page: string, opts: { selector?: string; fullPage?: boolean }, verify: VerifyScreen): Promise<ScreenshotResult> {
-    return this.onRuntime(user, space, async (rt) => {
+  screenshot(user: Credential, space: string, page: string, opts: { selector?: string; fullPage?: boolean }, verify: VerifyScreen, rows: RowRules | null = null): Promise<ScreenshotResult> {
+    return this.onRuntime(user, space, rows !== null, async (rt) => {
       try {
         // A screenshot interrupted before its restore leaves its redactions behind.
         await rt.lua(UNDO_SCRIPT);
@@ -645,7 +766,7 @@ export class Renderer {
           await rt.lua(PARK_SCRIPT);
           await this.settle(rt, space, BLANK_PAGE);
         }
-        await rt.lua(navigateScript(page));
+        await rt.lua(navigateScript(page, rows));
         await this.settle(rt, space, page);
         const redacted = new Set<string>();
         const done: Redactions = { font: [], style: [], image: [] };
@@ -711,8 +832,9 @@ export class Renderer {
   /**
    * Runs `fn` on the user's runtime for the space: queued per (user, space), under the global
    * cap, within the deadline, after the index wait for the pending writes of the space.
+   * `rowFilter`: whether the call installs the row filter, for the log.
    */
-  private async onRuntime<T>(user: Credential, space: string, fn: (rt: Handle) => Promise<T>): Promise<T & RenderOutcome> {
+  private async onRuntime<T>(user: Credential, space: string, rowFilter: boolean, fn: (rt: Handle) => Promise<T>): Promise<T & RenderOutcome> {
     const { sb, state, config, log } = this.d;
     const key = `${user.user}/${space}`;
     const deadline = Date.now() + config.renderTimeout;
@@ -758,7 +880,7 @@ export class Renderer {
         const indexWaitMs = Date.now() - t1;
         const out = await fn(handle);
         const own = (out as { warnings?: string[] }).warnings ?? [];
-        log.info("render", { user: user.user, space, queuedMs, indexWaitMs, rebooted, loaded: (out as { loaded?: number }).loaded, ms: Date.now() - t0 });
+        log.info("render", { user: user.user, space, queuedMs, indexWaitMs, rebooted, rowFilter, loaded: (out as { loaded?: number }).loaded, ms: Date.now() - t0 });
         return { ...out, queuedMs, indexWaitMs, rebooted, warnings: [...warnings, ...own] };
       } finally {
         release();

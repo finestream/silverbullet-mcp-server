@@ -137,6 +137,46 @@ export function renderersWithoutRead(acl: AccessList, subjects: readonly Subject
 const sampleOf = (entryPath: string) => (entryPath === "/" ? "\u0001" : entryPath.endsWith("/") ? `${entryPath}\u0001` : entryPath);
 const pathText = (entryPath: string) => (entryPath === "/" ? "the rest of the space" : entryPath);
 
+/** The distinct paths of the entries that apply to the user in a space, the whole space included, each with the rights of its own reach. */
+function reach(acl: AccessList, user: string, groups: readonly string[], space: string): Array<{ path: string; rights: Rights }> {
+  const paths = [...new Set(["/", ...acl.entriesFor(user, groups, space).map((e) => e.path)])];
+  return paths.map((path) => ({ path, rights: acl.rights(user, groups, space, sampleOf(path)) }));
+}
+
+/**
+ * Whether the user may read a page, per path, for the row filter of a render (docs/security.md,
+ * section 12): `exact` for the exact entries, `folders` for the folder entries (`X/`), `root`
+ * for the rest of the space. The render script looks a page name up in that order, the folders
+ * from the longest down (`ruleAllows`); the result is that of `acl.rights` for every name.
+ */
+export type RowRules = { exact: Map<string, boolean>; folders: Map<string, boolean>; root: boolean };
+
+/** The row rules of a user in a space; null when the user may read every path they reach there, so that there is nothing to hide. */
+export function rowRules(acl: AccessList, user: string, groups: readonly string[], space: string): RowRules | null {
+  const paths = reach(acl, user, groups, space);
+  if (paths.every((p) => p.rights.has("r"))) return null;
+  const rules: RowRules = { exact: new Map(), folders: new Map(), root: false };
+  for (const { path, rights } of paths) {
+    if (path === "/") rules.root = rights.has("r");
+    else (path.endsWith("/") ? rules.folders : rules.exact).set(path, rights.has("r"));
+  }
+  return rules;
+}
+
+/** The lookup of the render script's row filter, step for step: the exact name, the folder of the same name, each parent folder from the longest, the root. */
+export function ruleAllows(rules: RowRules, page: string): boolean {
+  const exact = rules.exact.get(page);
+  if (exact !== undefined) return exact;
+  for (let q = page; ; ) {
+    const folder = rules.folders.get(`${q}/`);
+    if (folder !== undefined) return folder;
+    const i = q.lastIndexOf("/");
+    if (i < 0) break;
+    q = q.slice(0, i);
+  }
+  return rules.root;
+}
+
 /**
  * Per space, the users who have `x` on some path and no `r` on another (a `-`, or no entry at
  * all): a render there can show them what the list keeps from `read-note`. One line per space,
@@ -148,9 +188,9 @@ export function rendersWithDenials(acl: AccessList, subjects: readonly Subject[]
   for (const space of spaces) {
     const users: string[] = [];
     for (const s of subjects) {
-      const paths = [...new Set(["/", ...acl.entriesFor(s.user, s.groups, space).map((e) => e.path)])];
-      const withX = paths.filter((p) => acl.rights(s.user, s.groups, space, sampleOf(p)).has("x"));
-      const withoutR = paths.filter((p) => !acl.rights(s.user, s.groups, space, sampleOf(p)).has("r"));
+      const paths = reach(acl, s.user, s.groups, space);
+      const withX = paths.filter((p) => p.rights.has("x")).map((p) => p.path);
+      const withoutR = paths.filter((p) => !p.rights.has("r")).map((p) => p.path);
       if (withX.length && withoutR.length) users.push(`${s.user} (x on ${withX.map(pathText).join(", ")}; no r on ${withoutR.map(pathText).join(", ")})`);
     }
     if (users.length) {
