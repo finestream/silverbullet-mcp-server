@@ -293,13 +293,53 @@ function proposals.sanitize(root)
 end
 
 -----------------------------------------------------------------------
+-- proposals.walkTree(node, visit)
+--
+-- Calls visit(node) for a node of the parse tree and its descendants, in
+-- order; a visit that returns true leaves out the node's children.
+function proposals.walkTree(node, visit)
+	if visit(node) then return end
+	for _, child in ipairs(node.children or {}) do proposals.walkTree(child, visit) end
+end
+
+-----------------------------------------------------------------------
 -- proposals.holdsHtml(text)
 --
--- Whether a page text holds HTML tags, which the formatted view shows
--- only in part: the review then opens on the text view.
+-- Whether a page text holds HTML as the renderer sees it (an inline tag,
+-- an HTML block, a comment, a processing instruction), which the
+-- formatted view shows only in part: the review then opens on the text
+-- view. The parse tree decides, so `<name>` in a code span or a fence and
+-- a plain "a < b" do not count. Node types are matched by prefix, so a
+-- type the grammar adds fails towards the text view, provided its source
+-- starts with "<" (a %% comment is no HTML). Should the parser
+-- fail, the text counts as holding HTML, with a warning in the console.
 -----------------------------------------------------------------------
+proposals.htmlNodePrefixes = { "^HTML", "^Comment", "^ProcessingInstruction" }
+
+-- A node counts when its type matches and its source starts with "<":
+-- SilverBullet's own %% comment is a CommentBlock too, and no HTML.
+local function isHtmlNode(node, text)
+	if type(node.type) ~= "string" or string.sub(text, node.from + 1, node.from + 1) ~= "<" then return false end
+	for _, prefix in ipairs(proposals.htmlNodePrefixes) do
+		if string.find(node.type, prefix) then return true end
+	end
+	return false
+end
+
 function proposals.holdsHtml(text)
-	return type(text) == "string" and string.find(text, "<[%a/!?]") ~= nil
+	if type(text) ~= "string" then return false end
+	local found = false
+	local ok, err = pcall(function()
+		proposals.walkTree(markdown.parseMarkdown(text), function(node)
+			if isHtmlNode(node, text) then found = true end
+			return found
+		end)
+	end)
+	if not ok then
+		js.window.console.warn("proposals.holdsHtml: the parser failed, the page counts as holding HTML: " .. tostring(err))
+		return true
+	end
+	return found
 end
 
 -----------------------------------------------------------------------
@@ -318,7 +358,7 @@ end
 -----------------------------------------------------------------------
 function proposals.withoutRemoteImages(text)
 	local ranges = {}
-	local function walk(node)
+	proposals.walkTree(markdown.parseMarkdown(text), function(node)
 		if node.type == "Image" or node.type == "LinkReference" then
 			for _, child in ipairs(node.children or {}) do
 				if child.type == "URL" then
@@ -328,11 +368,9 @@ function proposals.withoutRemoteImages(text)
 					end
 				end
 			end
-			return
+			return true
 		end
-		for _, child in ipairs(node.children or {}) do walk(child) end
-	end
-	walk(markdown.parseMarkdown(text))
+	end)
 	local out, offset = {}, 1
 	for _, range in ipairs(ranges) do
 		table.insert(out, string.sub(text, offset, range.from))

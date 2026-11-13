@@ -162,3 +162,85 @@ return {
   assert.deepEqual([r.handlers, r.scripts, r.js], [0, 0, 0]);
   assert.ok(r.text.includes("${1 + 1}"), "an expression shows as text");
 });
+
+const viewState = () =>
+  lua<{ formatted: string; text: string; formattedWeight: string; textWeight: string }>(`local doc = js.window.document
+local box = doc.querySelector(".proposals-formatted")
+local buttons = doc.querySelectorAll(".proposals-header button")
+local weights = {}
+for i = 1, buttons.length do weights[buttons[i].textContent] = buttons[i].style.fontWeight end
+return { formatted = box.style.display, text = box.nextElementSibling.style.display, formattedWeight = weights["Formatted"], textWeight = weights["Text"] }`);
+
+test("review: placeholders in code and a plain < in prose are no HTML: the review opens on the formatted view", async () => {
+  const target = "Intro.\n";
+  await writePage("T/Placeholders", target);
+  await writeProposal("P/placeholders", {
+    action: "edit",
+    target: "T/Placeholders",
+    revision: await revisionOf(target),
+    reason: "",
+    edits: [{ oldText: "Intro.", newText: "Intro, a < b and 2<3.\n\nName it `<task> - <subject>`.\n\n```\n<name> <kbBaseUrl>\n```", expectedMatches: 1 }],
+  });
+  await open("review:P/placeholders", ".proposals-formatted");
+  const v = await viewState();
+  assert.equal(v.formatted, "flex", "the formatted view is shown");
+  assert.equal(v.text, "none");
+  assert.deepEqual([v.formattedWeight, v.textWeight], ["bold", "normal"]);
+  const formatted = await shown(".proposals-formatted");
+  assert.ok(formatted.includes("<task> - <subject>"), formatted);
+  assert.ok(formatted.includes("<name> <kbBaseUrl>"), formatted);
+});
+
+test("review: an inline <img> in a paragraph still opens the review on the text view", async () => {
+  const target = "Intro.\n";
+  await writePage("T/Inline", target);
+  await writeProposal("P/inline", {
+    action: "edit",
+    target: "T/Inline",
+    revision: await revisionOf(target),
+    reason: "",
+    edits: [{ oldText: "Intro.", newText: 'Intro with <img src="local.png" alt="a"> inside.', expectedMatches: 1 }],
+  });
+  await open("review:P/inline", ".proposals-formatted");
+  const v = await viewState();
+  assert.equal(v.formatted, "none", "the text view comes first");
+  assert.deepEqual([v.formattedWeight, v.textWeight], ["normal", "bold"]);
+});
+
+for (const [i, [label, html]] of [
+  ["a <?…?> block", "Before.\n\n<?php echo 1; ?>\n\nAfter."],
+  ["a <!-- … --> block", "Before.\n\n<!-- hidden\nlines -->\n\nAfter."],
+  ["a <!DOCTYPE x> line", "Before.\n\n<!DOCTYPE x>\n\nAfter."],
+].entries()) {
+  test(`review: ${label} opens the review on the text view`, async () => {
+    const target = "Intro.\n";
+    await writePage(`T/Block-${i}`, target);
+    await writeProposal(`P/block-${i}`, {
+      action: "edit",
+      target: `T/Block-${i}`,
+      revision: await revisionOf(target),
+      reason: "",
+      edits: [{ oldText: "Intro.", newText: html, expectedMatches: 1 }],
+    });
+    await open(`review:P/block-${i}`, ".proposals-formatted");
+    const v = await viewState();
+    assert.equal(v.formatted, "none", "the text view comes first");
+    assert.deepEqual([v.formattedWeight, v.textWeight], ["normal", "bold"]);
+  });
+}
+
+test("review: a %% comment is no HTML: the review opens on the formatted view", async () => {
+  const target = "Intro.\n";
+  await writePage("T/Note", target);
+  await writeProposal("P/note", {
+    action: "edit",
+    target: "T/Note",
+    revision: await revisionOf(target),
+    reason: "",
+    edits: [{ oldText: "Intro.", newText: "Intro.\n\n%% a note for the author\n\nAfter.", expectedMatches: 1 }],
+  });
+  await open("review:P/note", ".proposals-formatted");
+  const v = await viewState();
+  assert.equal(v.formatted, "flex", "the formatted view is shown");
+  assert.deepEqual([v.formattedWeight, v.textWeight], ["bold", "normal"]);
+});
