@@ -670,6 +670,11 @@ export class Renderer {
       } finally {
         // Past the deadline too, and never throwing: the result stands and the runtime gets its state back.
         await rt.cleanup(RESTORE_SCRIPT);
+        // Reads of the page just left land after the navigation returned; let them settle here, so that they
+        // do not fall into the window of the next call on this runtime (a render-note does not park first).
+        await Promise.resolve()
+          .then(() => this.settle(rt, space, BLANK_PAGE))
+          .catch(() => {});
       }
     });
   }
