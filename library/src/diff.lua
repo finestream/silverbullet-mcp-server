@@ -295,11 +295,29 @@ end
 -----------------------------------------------------------------------
 -- proposals.holdsHtml(text)
 --
--- Whether a page text holds HTML tags, which the formatted view shows
--- only in part: the review then opens on the text view.
+-- Whether a page text holds HTML as the renderer sees it (an inline tag,
+-- an HTML block, a comment), which the formatted view shows only in
+-- part: the review then opens on the text view. The parse tree decides,
+-- so `<name>` in a code span or a fence and a plain "a < b" do not
+-- count. Should the parser fail, the text counts as holding HTML.
 -----------------------------------------------------------------------
+proposals.htmlNodes = {
+	HTMLTag = true, HTMLBlock = true, HTMLOpenTag = true, HTMLCloseTag = true,
+	CommentBlock = true, Comment = true, ProcessingInstruction = true,
+}
+
 function proposals.holdsHtml(text)
-	return type(text) == "string" and string.find(text, "<[%a/!?]") ~= nil
+	if type(text) ~= "string" then return false end
+	local function walk(node)
+		if proposals.htmlNodes[node.type] then return true end
+		for _, child in ipairs(node.children or {}) do
+			if walk(child) then return true end
+		end
+		return false
+	end
+	local ok, found = pcall(function() return walk(markdown.parseMarkdown(text)) end)
+	if not ok then return true end
+	return found
 end
 
 -----------------------------------------------------------------------

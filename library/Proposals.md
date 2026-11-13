@@ -4,7 +4,7 @@ tags: meta/library
 author: finestream
 description: "Review change proposals made through the SilverBullet MCP server: a list, a diff per proposal, and Apply, Edit and Reject with your own rights."
 pageDecoration.prefix: "📝 "
-version: "0.8.0"
+version: "0.8.1"
 proposalFormat: 1
 ---
 > **note**
@@ -94,7 +94,7 @@ The first lists every open proposal, the second only those for one page (put it 
 -----------------------------------------------------------------------
 proposals = proposals or {}
 
-proposals.version = "0.8.0"
+proposals.version = "0.8.1"
 proposals.format = 1
 proposals.tag = "change-proposal"
 
@@ -1250,11 +1250,29 @@ end
 -----------------------------------------------------------------------
 -- proposals.holdsHtml(text)
 --
--- Whether a page text holds HTML tags, which the formatted view shows
--- only in part: the review then opens on the text view.
+-- Whether a page text holds HTML as the renderer sees it (an inline tag,
+-- an HTML block, a comment), which the formatted view shows only in
+-- part: the review then opens on the text view. The parse tree decides,
+-- so `<name>` in a code span or a fence and a plain "a < b" do not
+-- count. Should the parser fail, the text counts as holding HTML.
 -----------------------------------------------------------------------
+proposals.htmlNodes = {
+	HTMLTag = true, HTMLBlock = true, HTMLOpenTag = true, HTMLCloseTag = true,
+	CommentBlock = true, Comment = true, ProcessingInstruction = true,
+}
+
 function proposals.holdsHtml(text)
-	return type(text) == "string" and string.find(text, "<[%a/!?]") ~= nil
+	if type(text) ~= "string" then return false end
+	local function walk(node)
+		if proposals.htmlNodes[node.type] then return true end
+		for _, child in ipairs(node.children or {}) do
+			if walk(child) then return true end
+		end
+		return false
+	end
+	local ok, found = pcall(function() return walk(markdown.parseMarkdown(text)) end)
+	if not ok then return true end
+	return found
 end
 
 -----------------------------------------------------------------------

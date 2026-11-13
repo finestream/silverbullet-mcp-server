@@ -162,3 +162,44 @@ return {
   assert.deepEqual([r.handlers, r.scripts, r.js], [0, 0, 0]);
   assert.ok(r.text.includes("${1 + 1}"), "an expression shows as text");
 });
+
+const viewState = () =>
+  lua<{ formatted: string; text: string; formattedWeight: string; textWeight: string }>(`local doc = js.window.document
+local box = doc.querySelector(".proposals-formatted")
+local buttons = doc.querySelectorAll(".proposals-header button")
+local weights = {}
+for i = 1, buttons.length do weights[buttons[i].textContent] = buttons[i].style.fontWeight end
+return { formatted = box.style.display, text = box.nextElementSibling.style.display, formattedWeight = weights["Formatted"], textWeight = weights["Text"] }`);
+
+test("review: placeholders in code and a plain < in prose are no HTML: the review opens on the formatted view", async () => {
+  const target = "Intro.\n";
+  await writePage("T/Placeholders", target);
+  await writeProposal("P/placeholders", {
+    action: "edit",
+    target: "T/Placeholders",
+    revision: await revisionOf(target),
+    reason: "",
+    edits: [{ oldText: "Intro.", newText: "Intro, a < b and 2<3.\n\nName it `<task> - <subject>`.\n\n```\n<name> <kbBaseUrl>\n```", expectedMatches: 1 }],
+  });
+  await open("review:P/placeholders", ".proposals-formatted");
+  const v = await viewState();
+  assert.equal(v.formatted, "flex", "the formatted view is shown");
+  assert.equal(v.text, "none");
+  assert.deepEqual([v.formattedWeight, v.textWeight], ["bold", "normal"]);
+});
+
+test("review: an inline <img> in a paragraph still opens the review on the text view", async () => {
+  const target = "Intro.\n";
+  await writePage("T/Inline", target);
+  await writeProposal("P/inline", {
+    action: "edit",
+    target: "T/Inline",
+    revision: await revisionOf(target),
+    reason: "",
+    edits: [{ oldText: "Intro.", newText: 'Intro with <img src="local.png" alt="a"> inside.', expectedMatches: 1 }],
+  });
+  await open("review:P/inline", ".proposals-formatted");
+  const v = await viewState();
+  assert.equal(v.formatted, "none", "the text view comes first");
+  assert.deepEqual([v.formattedWeight, v.textWeight], ["normal", "bold"]);
+});
