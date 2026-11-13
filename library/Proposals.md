@@ -1265,15 +1265,18 @@ end
 -- formatted view shows only in part: the review then opens on the text
 -- view. The parse tree decides, so `<name>` in a code span or a fence and
 -- a plain "a < b" do not count. Node types are matched by prefix, so a
--- type the grammar adds fails towards the text view. Should the parser
+-- type the grammar adds fails towards the text view, provided its source
+-- starts with "<" (a %% comment is no HTML). Should the parser
 -- fail, the text counts as holding HTML, with a warning in the console.
 -----------------------------------------------------------------------
-proposals.htmlNodePrefixes = { "^HTML", "^Comment", "^ProcessingInstruction", "^CDATA" }
+proposals.htmlNodePrefixes = { "^HTML", "^Comment", "^ProcessingInstruction" }
 
-local function isHtmlNode(kind)
-	if type(kind) ~= "string" then return false end
+-- A node counts when its type matches and its source starts with "<":
+-- SilverBullet's own %% comment is a CommentBlock too, and no HTML.
+local function isHtmlNode(node, text)
+	if type(node.type) ~= "string" or string.sub(text, node.from + 1, node.from + 1) ~= "<" then return false end
 	for _, prefix in ipairs(proposals.htmlNodePrefixes) do
-		if string.find(kind, prefix) then return true end
+		if string.find(node.type, prefix) then return true end
 	end
 	return false
 end
@@ -1283,7 +1286,7 @@ function proposals.holdsHtml(text)
 	local found = false
 	local ok, err = pcall(function()
 		proposals.walkTree(markdown.parseMarkdown(text), function(node)
-			if isHtmlNode(node.type) then found = true end
+			if isHtmlNode(node, text) then found = true end
 			return found
 		end)
 	end)
