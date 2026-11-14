@@ -68,14 +68,25 @@ export async function revisionOf(text: string): Promise<string> {
   return "sha256:" + createHash("sha256").update(text).digest("hex");
 }
 
-/** Writes a proposal page as the server's tools write it, and waits until the index lists it. */
+/**
+ * Writes a proposal page as the server's tools write it, and waits until the
+ * index lists it. The client indexes a page when it saves it, but a delete
+ * event of an earlier test's page of the same name can still be on its way and
+ * drop the new row; the wait is on the row, and a page the index still lacks
+ * after a few seconds is written again, which indexes it again.
+ */
 export async function writeProposal(name: string, proposal: Proposal) {
-  await writePage(name, formatProposal(proposal));
-  await indexed([name]);
+  const text = formatProposal(proposal);
+  for (let attempt = 1; ; attempt++) {
+    await writePage(name, text);
+    if (await indexed([name], attempt === ATTEMPTS ? 20000 : 6000, attempt === ATTEMPTS)) return;
+  }
 }
 
-/** Waits until the index knows every one of these proposal pages. */
-export async function indexed(names: string[]) {
+const ATTEMPTS = 3;
+
+/** Waits until the index knows every one of these proposal pages; at the end of `last` attempts it fails and says what the index holds. */
+export async function indexed(names: string[], timeoutMs = 20000, fail = true): Promise<boolean> {
   const list = `{${names.map((n) => luaString(n)).join(",")}}`;
   const { value } = await until(
     () =>
@@ -84,10 +95,14 @@ local have = {}
 for _, p in ipairs(query[[from p = index.tag "change-proposal" where p.tag == "page" select p.name]]) do have[p] = true end
 for _, n in ipairs(want) do if not have[n] then return false end end
 return true`),
-    20000,
+    timeoutMs,
     300,
   );
-  assert.ok(value, `the index does not list ${names.join(", ")}`);
+  if (value) return true;
+  if (!fail) return false;
+  const held = await lua<string[]>(`local out = {} for _, p in ipairs(query[[from p = index.tag "change-proposal" where p.tag == "page" select p.name]]) do table.insert(out, p) end return out`);
+  const files = await Promise.all(names.map(async (n) => `${n}: ${(await readPage(n)) === null ? "no file" : "file exists"}`));
+  assert.fail(`the index does not list ${names.join(", ")} (it lists: ${JSON.stringify(held)}; ${files.join(", ")})`);
 }
 
 /** Forgets what this client remembers of a group's batch and of closed proposals. */
