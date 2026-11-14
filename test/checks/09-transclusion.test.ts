@@ -108,6 +108,21 @@ const settled = async () => {
     last = n;
   }
 };
+/**
+ * Waits until the client has read nothing but the shown page for `windows` windows of 500 ms. After a navigation it goes
+ * on reading for a while, transclusions included, and it polls the shown page every few seconds, so a check of what a
+ * navigation reads settles first, as `quiet()` of server/04-render does.
+ */
+const quiet = async (windows = 4) => {
+  let still = 0;
+  for (let i = 0; i < 60 && still < windows; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    const others = (await fsReads()).filter((p) => p !== `${PAGE}.md`);
+    await clearReads();
+    still = others.length === 0 ? still + 1 : 0;
+  }
+  assert.ok(still >= windows, "the client keeps reading the file API");
+};
 const show = async (page: string) => {
   await sb.lua(T.alice, S.gamma, `editor.navigate(${JSON.stringify(page)})`);
   await settled();
@@ -143,7 +158,7 @@ test("[watch] loads: navigating to the page already shown reads the page again b
   try {
     await show(BLANK);
     await show(PAGE);
-    await clearReads();
+    await quiet();
     await show(PAGE);
     const reads = await fsReads();
     assert.ok(reads.includes(`${PAGE}.md`), `the page itself: ${reads.join(", ")}`);
