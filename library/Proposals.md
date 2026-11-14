@@ -4,7 +4,7 @@ tags: meta/library
 author: finestream
 description: "Review change proposals made through the SilverBullet MCP server: a list, a diff per proposal, and Apply, Edit and Reject with your own rights."
 pageDecoration.prefix: "📝 "
-version: "0.8.1"
+version: "0.8.2"
 proposalFormat: 1
 ---
 > **note**
@@ -94,7 +94,7 @@ The first lists every open proposal, the second only those for one page (put it 
 -----------------------------------------------------------------------
 proposals = proposals or {}
 
-proposals.version = "0.8.1"
+proposals.version = "0.8.2"
 proposals.format = 1
 proposals.tag = "change-proposal"
 
@@ -1357,6 +1357,26 @@ function proposals.markdownBlock(text, style)
 end
 
 -----------------------------------------------------------------------
+-- proposals.dedentFence(text)
+--
+-- A block that starts with a fence indented four or more spaces (a fence
+-- of a list item, which proposals.blocks keeps apart from the item at the
+-- blank line before it) with the opening fence's indent removed from its
+-- lines: rendered alone, such a block would be an indented code block
+-- showing the fence markers as text. Any other text is returned as is.
+-----------------------------------------------------------------------
+function proposals.dedentFence(text)
+	local indent, rest = string.match(text, "^( +)([^\n]*)")
+	if not indent or #indent < 4 or not proposals.fenceOpening(rest) then return text end
+	local out = {}
+	for _, line in ipairs(proposals.lines(text)) do
+		local lead = string.match(line, "^ *")
+		table.insert(out, string.sub(line, math.min(#lead, #indent) + 1))
+	end
+	return table.concat(out, "\n")
+end
+
+-----------------------------------------------------------------------
 -- proposals.rendered(text, kind)
 --
 -- A piece of markdown rendered as one block of the formatted view:
@@ -1375,7 +1395,7 @@ function proposals.rendered(text, kind)
 	else
 		style = style .. "border-left:3px solid transparent;"
 	end
-	return proposals.markdownBlock(text, style)
+	return proposals.markdownBlock(proposals.dedentFence(text), style)
 end
 
 -----------------------------------------------------------------------
@@ -1398,9 +1418,18 @@ function proposals.fenceCloses(line, fence)
 		and string.find(run, string.sub(fence, 1, 1) == "`" and "~" or "`", 1, true) == nil
 end
 
--- whether a block of proposals.blocks is a fenced code block
+-- whether a block of proposals.blocks is a fenced code block or holds
+-- one (nested in a list item or a quote): a changed one is shown whole,
+-- because a line range of a fence renders as something else
 function proposals.isCode(block)
-	return proposals.fenceOpening(block) ~= nil
+	if proposals.fenceOpening(block) ~= nil then return true end
+	for _, line in ipairs(proposals.lines(block)) do
+		local rest = string.gsub(line, "^[%s>]*", "")
+		rest = string.gsub(rest, "^[-*+]%s+", "")
+		rest = string.gsub(rest, "^%d+[.)]%s+", "")
+		if string.find(rest, "^```") or string.find(rest, "^~~~") then return true end
+	end
+	return false
 end
 
 -----------------------------------------------------------------------
@@ -1409,8 +1438,39 @@ end
 -- The blocks of a page body, as the formatted view compares them:
 -- separated by blank lines; a heading is a block of its own, because a
 -- page often puts its text directly under the heading; a fenced code
--- block is one block, blank lines and "#" lines inside it included.
+-- block is one block, blank lines and "#" lines inside it included. A
+-- fence the line patterns do not see (indented four or more spaces in a
+-- list item, after ">") is found in the parse tree and stays part of its
+-- block, whole; should the parser fail, only the patterns apply.
 -----------------------------------------------------------------------
+
+-- the lines (by number) inside a fenced code block that does not start
+-- with a fence the line patterns recognise
+local function nestedFenceLines(body, lines)
+	local protected = {}
+	local ok = pcall(function()
+		local starts, offset = {}, 0
+		for i, line in ipairs(lines) do
+			starts[i] = offset
+			offset = offset + #line + 1
+		end
+		proposals.walkTree(markdown.parseMarkdown(body), function(node)
+			if node.type ~= "FencedCode" then return end
+			local first, last
+			for i, line in ipairs(lines) do
+				if not first and node.from <= starts[i] + #line then first = i end
+				if node.to > starts[i] then last = i end
+			end
+			if first and last and not proposals.fenceOpening(lines[first]) then
+				for i = first, last do protected[i] = true end
+			end
+			return true
+		end)
+	end)
+	if not ok then return {} end
+	return protected
+end
+
 function proposals.blocks(text)
 	local out, current = {}, {}
 	local fence = nil
@@ -1419,13 +1479,17 @@ function proposals.blocks(text)
 		current = {}
 	end
 	local _, body = proposals.splitFrontmatter(text)
-	for _, line in ipairs(proposals.lines(body)) do
+	local lines = proposals.lines(body)
+	local nested = nestedFenceLines(body, lines)
+	for n, line in ipairs(lines) do
 		if fence then
 			table.insert(current, line)
 			if proposals.fenceCloses(line, fence) then
 				fence = nil
 				flush()
 			end
+		elseif nested[n] then
+			table.insert(current, line)
 		elseif proposals.fenceOpening(line) then
 			flush()
 			fence = proposals.fenceOpening(line)
