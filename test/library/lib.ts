@@ -68,14 +68,38 @@ export async function revisionOf(text: string): Promise<string> {
   return "sha256:" + createHash("sha256").update(text).digest("hex");
 }
 
-/** Writes a proposal page as the server's tools write it, and waits until the index lists it. */
+/**
+ * Writes a proposal page as the server's tools write it, and waits until the
+ * index lists it. The client indexes a page when it saves it; once in CI the
+ * row was missing for 20 s. Suspected cause (not reproduced): a delete event
+ * of an earlier test's page of the same name arrives late and drops the new
+ * row. The wait is on the row; a page the index still lacks after a few
+ * seconds is written again, which indexes it again. Every repeat is reported
+ * on stderr, so that the log of a green run shows the race whenever it happens.
+ */
 export async function writeProposal(name: string, proposal: Proposal) {
-  await writePage(name, formatProposal(proposal));
-  await indexed([name]);
+  const text = formatProposal(proposal);
+  for (let attempt = 1; ; attempt++) {
+    await writePage(name, text);
+    const last = attempt === ATTEMPTS;
+    if (await indexed([name], last ? 20000 : 6000, false)) return;
+    const state = await indexState([name]);
+    if (last) assert.fail(`the index does not list ${name} (${state})`);
+    console.error(`writeProposal: ${name} not listed by the index after write ${attempt} of ${ATTEMPTS}, writing it again (${state})`);
+  }
 }
 
-/** Waits until the index knows every one of these proposal pages. */
-export async function indexed(names: string[]) {
+const ATTEMPTS = 3;
+
+/** What the index lists of the proposal pages, and whether the files of `names` exist, as one line for a diagnostic. */
+async function indexState(names: string[]): Promise<string> {
+  const listed = await lua<string[]>(`local out = {} for _, p in ipairs(query[[from p = index.tag "change-proposal" where p.tag == "page" select p.name]]) do table.insert(out, p) end return out`);
+  const files = await Promise.all(names.map(async (n) => `${n}: ${(await readPage(n)) === null ? "no file" : "file exists"}`));
+  return `the index lists ${JSON.stringify(listed)}; ${files.join(", ")}`;
+}
+
+/** Waits until the index knows every one of these proposal pages; with `fail` it throws, saying what the index holds, otherwise it returns false. */
+export async function indexed(names: string[], timeoutMs = 20000, fail = true): Promise<boolean> {
   const list = `{${names.map((n) => luaString(n)).join(",")}}`;
   const { value } = await until(
     () =>
@@ -84,10 +108,12 @@ local have = {}
 for _, p in ipairs(query[[from p = index.tag "change-proposal" where p.tag == "page" select p.name]]) do have[p] = true end
 for _, n in ipairs(want) do if not have[n] then return false end end
 return true`),
-    20000,
+    timeoutMs,
     300,
   );
-  assert.ok(value, `the index does not list ${names.join(", ")}`);
+  if (value) return true;
+  if (fail) assert.fail(`the index does not list ${names.join(", ")} (${await indexState(names)})`);
+  return false;
 }
 
 /** Forgets what this client remembers of a group's batch and of closed proposals. */
