@@ -137,8 +137,25 @@ export async function shown(selector: string, timeoutMs = 15000): Promise<string
     timeoutMs,
     300,
   );
-  assert.ok(value !== undefined && value !== null, `nothing matches ${selector}`);
+  if (value === undefined || value === null) assert.fail(`nothing matches ${selector} (${await documentState()})`);
   return value;
+}
+
+/** What the client shows, as one line for a diagnostic: the current page, how many widgets of the library are drawn and the start of the text. */
+export async function documentState(): Promise<string> {
+  try {
+    const s = await lua<string>(`local d = js.window.document
+local text = d.body.innerText or ""
+return "page " .. editor.getCurrentPage() .. ", " .. d.querySelectorAll(".proposals-review").length .. " review views, text " .. string.format("%q", string.sub(text, 1, 200))`);
+    return s;
+  } catch (e) {
+    return `the client does not answer: ${e instanceof Error ? e.message : e}`;
+  }
+}
+
+/** The text of the first element that matches `selector`, or null while there is none. */
+export async function textOf(selector: string): Promise<string | null> {
+  return lua<string | null>(`local e = js.window.document.querySelector(${luaString(selector)}) return e and e.textContent or nil`);
 }
 
 /** Clicks the first button with this label inside `selector`. */

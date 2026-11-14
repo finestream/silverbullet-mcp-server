@@ -3,7 +3,7 @@
 
 import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { clean, click, configure, currentPage, forget, freshRuntime, indexed, lua, open, readPage, revisionOf, shown, until, writePage } from "./lib.ts";
+import { clean, click, configure, currentPage, documentState, forget, freshRuntime, indexed, lua, open, readPage, revisionOf, textOf, until, writePage } from "./lib.ts";
 import { formatProposal } from "../../src/proposal.ts";
 
 test.before(async () => {
@@ -16,7 +16,11 @@ beforeEach(async () => {
 });
 
 const name = (n: number) => `P/batch ${String(n).padStart(2, "0")}`;
-const page = (want: string) => until(async () => (await currentPage()) === want, 15000, 300);
+/** Waits until the client shows `want`; fails, saying what it shows instead. */
+const page = async (want: string) => {
+  const { value } = await until(async () => (await currentPage()) === want, 15000, 300);
+  if (!value) assert.fail(`the client does not show ${want} (${await documentState()})`);
+};
 
 /** A target with one line per proposal, and `count` proposals of group `group`, each changing its own line. */
 async function batch(count: number, group: string, target = "T/Batch") {
@@ -35,22 +39,26 @@ async function batch(count: number, group: string, target = "T/Batch") {
   return names;
 }
 
-const position = () => shown(".proposals-position");
+const position = () => textOf(".proposals-position");
+
+/** Waits until the counter reads `want`; fails, saying what the client shows instead. */
+const counts = async (want: string) => {
+  const { value } = await until(async () => (await position()) === want, 15000, 300);
+  if (!value) assert.fail(`the counter does not read ${want}: ${JSON.stringify(await position())} (${await documentState()})`);
+};
 
 test("batch: with 4 of 20 applied, the 5th shows 5 / 20; Previous and Next skip the closed ones", async () => {
   const names = await batch(20, "20");
   assert.equal(await open(`review:${names[2]}`, ".proposals-position"), "3 / 20", "a batch first opened on its third proposal");
   for (const n of names.slice(0, 4)) assert.deepEqual(await lua(`return {proposals.apply(${JSON.stringify(n)}, {unbound = true})}`).then((r) => (r as unknown[])[0]), true);
   await open(`review:${names[4]}`, ".proposals-review");
-  await until(async () => (await position()) === "5 / 20", 5000);
-  assert.equal(await position(), "5 / 20");
+  await counts("5 / 20");
   const disabled = await lua<boolean>(`local bs = js.window.document.querySelectorAll(".proposals-navigation button")
 return bs[1].disabled`);
   assert.equal(disabled, true, "Previous is greyed out: the four before are applied");
   await click(".proposals-navigation", "Next ›");
   await page(`review:${names[5]}`);
-  await until(async () => (await position()) === "6 / 20", 5000);
-  assert.equal(await position(), "6 / 20");
+  await counts("6 / 20");
   await click(".proposals-navigation", "‹ Previous");
   await page(`review:${names[4]}`);
 });
@@ -60,11 +68,10 @@ test("batch: Apply goes on to the next open proposal of the batch, and the count
   await open(`review:${names[0]}`, ".proposals-position");
   await click(".proposals-header", "Apply");
   await page(`review:${names[1]}`);
-  await until(async () => (await position()) === "2 / 3", 5000);
-  assert.equal(await position(), "2 / 3");
+  await counts("2 / 3");
   await click(".proposals-header", "Reject");
   await page(`review:${names[2]}`);
-  await until(async () => (await position()) === "3 / 3", 5000);
+  await counts("3 / 3");
   assert.equal(await readPage("T/Batch"), "line 1 changed\n\nline 2\n\nline 3\n");
 });
 
@@ -75,7 +82,7 @@ test("batch: after the last of a batch, the next open proposal of the list; afte
   await open(`review:${names[0]}`, ".proposals-position");
   await click(".proposals-header", "Apply");
   await page(`review:${others[0]}`);
-  await until(async () => (await position()) === "1 / 1", 5000);
+  await counts("1 / 1");
   await click(".proposals-header", "Apply");
   await page("T/Done");
   assert.equal(await lua(`return clientStore.get(proposals.batchKey("other"))`), null, "a finished batch is forgotten");
@@ -110,8 +117,7 @@ test("batch: the counter comes from the client's store, so it holds after the cl
   for (const n of names.slice(0, 2)) await lua(`return (proposals.apply(${JSON.stringify(n)}, {unbound = true}))`);
   await lua(`proposals.closed = {} return true`);
   await open(`review:${names[2]}`, ".proposals-review");
-  await until(async () => (await position()) === "3 / 6", 5000);
-  assert.equal(await position(), "3 / 6");
+  await counts("3 / 6");
 });
 
 test("batch: Apply all applies what fits and names the others with their reason", async () => {
