@@ -458,6 +458,54 @@ test("row filter: render-note hides the denied page's tasks, items, headers, pag
   }
 });
 
+test("row filter: rows of the denied page that name an allowed page by attribute are dropped (page and ref forged together, an anchored object and its anchor, a page row); the allowed page's own rows stay", async () => {
+  const id = unique("x").split(" ")[1];
+  const hidden = `Hidden/Forged ${id}`;
+  const render = `Hidden/Render ${id}`;
+  const shown = track(`Projects/Forged ${id}`);
+  const head = "# Shown\n\n";
+  const s = await startServer({ accessList: ROW_ACCESS(render) });
+  const a = await connect(s.url, BEARERS.alice);
+  try {
+    const c = await a.call("create-note", { space: "gamma", filename: shown, content: `${head}* [ ] task ${id} shown $real_${id}\n` });
+    assert.equal(c.isError, false, c.text);
+    // The forged task takes the ref of the allowed page's real task, so a lookup under that page finds another object.
+    const ref = `${shown}@${head.length}`;
+    await sb.write(
+      T.admin,
+      "gamma",
+      `${hidden}.md`,
+      `* [ ] task ${id} forged both [page: ${shown}] [ref: ${ref}]\n* item ${id} forged anchored $fake_${id} [page: ${shown}]\n* item ${id} forged pagerow [tag: page] [name: ${shown}] [ref: ${shown}]\n\nSee [[${shown}]].\n`,
+    );
+    const hit = (fn: string, field: string) => `\${query[[from o = ${fn} where string.find(o.${field} or "", "${id}", 1, true) ~= nil select o.${field}]]}`;
+    await sb.write(
+      T.admin,
+      "gamma",
+      `${render}.md`,
+      `Tasks: ${hit("index.tasks()", "text")}\n\nItems: ${hit("index.items()", "text")}\n\nPages: ${hit("index.pages()", "text")}\n\nAnchors: ${hit('index.tag "anchor"', "ref")}\n\nByRef: \${index.getObjectByRef("${hidden}", "task", "${ref}") == nil}\n\nResolve: \${query[[from x = {index.resolveAnchor("fake_${id}")} where x.ok select "fake anchor resolved"]]}\n`,
+    );
+    await indexed(hidden);
+    // Without the filter the forged rows are in the index under the allowed page's name (the test is not vacuous).
+    const forged = await sb.lua(T.alice, "gamma", `return #query[[from o = index.tasks() where o.page == ${JSON.stringify(shown)}]] + #query[[from o = index.items() where o.page == ${JSON.stringify(shown)}]] + #query[[from o = index.tag "anchor" where o.ref == "fake_${id}" and o.page == ${JSON.stringify(shown)}]] + #query[[from o = index.pages() where o.name == ${JSON.stringify(shown)} and o.text ~= nil]]`);
+    assert.equal(forged.result, 5, "the real task, the forged task, the forged item, its anchor and the forged page row all name the allowed page");
+    await s.rescan();
+    const r = await a.call("render-note", { space: "gamma", filename: render });
+    assert.equal(r.isError, false, r.text);
+    const md = r.data!.content as string;
+    assert.doesNotMatch(md, /forged/, `no forged row:\n${md}`);
+    assert.doesNotMatch(md, new RegExp(`fake_${id}`), "neither the forged anchor");
+    assert.match(md, new RegExp(`task ${id} shown`), "the allowed page's real task stays (same ref as the forged one)");
+    assert.match(md, new RegExp(`real_${id}`), "and its real anchor");
+    assert.match(md, /ByRef: true/, "getObjectByRef under the denied page finds nothing, whatever page the object names");
+    assert.doesNotMatch(md, /fake anchor resolved/, "resolveAnchor misses the forged anchor");
+  } finally {
+    await a.close();
+    await s.stop();
+    await sb.remove(T.admin, "gamma", `${hidden}.md`);
+    await sb.remove(T.admin, "gamma", `${render}.md`);
+  }
+});
+
 test("row filter: screenshot-note hides the denied page's mention in Linked Mentions and its row in a query; the allowed page's mention shows", async () => {
   const id = unique("x").split(" ")[1];
   const hidden = `Hidden/Mention ${id}`;

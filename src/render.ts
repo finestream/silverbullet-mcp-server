@@ -490,7 +490,11 @@ export const NO_PAGE_DATA = ["describeSchema", "tagSchema", "aggregates", "isAva
  * (measured on 2.12.1), so the page of a row is: the `name` of a page or document whose `ref` is
  * that name; else the page part of a `page@pos` ref, the row dropped when its `page` differs; else
  * `page` (anchors, anchored objects, tag rows: one attribute can set it there). A row without a
- * page, and a page or document row that fits neither, is dropped. The shims read
+ * page, and a page or document row that fits neither, is dropped. Since attributes can forge all
+ * of these together, a row the rules allow is then looked up through the original
+ * `getObjectByRef` under the page it names: storage keys every object by its real page, so a
+ * forged row finds nothing there, or another object, and is dropped. `getObjectByRef` itself
+ * checks the page it is asked for, the storage key, as well as the object. The shims read
  * the rules from `_G` at call time, and with no rules they deny: a call that sets none restores
  * the functions before clearing them. Called after `SHADOW`, whose restore undoes this too.
  */
@@ -524,6 +528,23 @@ local function sbmcp_page(o)
   if paged or type(o.page) ~= "string" then return nil end
   return o.page
 end
+local function sbmcp_same(a, b)
+  if a == b then return true end
+  if type(a) ~= "table" or type(b) ~= "table" then return false end
+  for k, v in pairs(a) do
+    if not sbmcp_same(v, b[k]) then return false end
+  end
+  for k, _ in pairs(b) do
+    if a[k] == nil then return false end
+  end
+  return true
+end
+local function sbmcp_keep(o, lookup)
+  local p = sbmcp_page(o)
+  if not sbmcp_may(p) then return false end
+  local ok, stored = pcall(lookup, p, o.tag, o.ref)
+  return ok and sbmcp_same(o, stored)
+end
 local function sbmcp_rows(rules)
   if _G.__sbmcp_index_saved ~= nil then
     for f, fn in pairs(_G.__sbmcp_index_saved) do index[f] = fn end
@@ -532,18 +553,19 @@ local function sbmcp_rows(rules)
   _G.__sbmcp_rules = rules
   if rules == nil then return end
   local saved = {}
+  local getObjectByRef = index.getObjectByRef
   for _, f in ipairs({${ROW_FUNCTIONS.map((f) => JSON.stringify(f)).join(", ")}}) do
     local orig = index[f]
     saved[f] = orig
     index[f] = function(...)
       local rows = orig(...)
-      return query[[from o = rows where sbmcp_may(sbmcp_page(o))]]
+      return query[[from o = rows where sbmcp_keep(o, getObjectByRef)]]
     end
   end
-  local getObjectByRef = index.getObjectByRef
   saved.getObjectByRef = getObjectByRef
-  index.getObjectByRef = function(...)
-    local o = getObjectByRef(...)
+  index.getObjectByRef = function(page, ...)
+    if not sbmcp_may(page) then return nil end
+    local o = getObjectByRef(page, ...)
     if o ~= nil and not sbmcp_may(sbmcp_page(o)) then return nil end
     return o
   end
