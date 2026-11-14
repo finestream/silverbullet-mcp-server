@@ -2,7 +2,7 @@
 // 12): every reading index function of the shipped allowlist is filtered or carries no page
 // data; the rows of the filtered ones name their page under the fields the filter reads; the
 // server's filter hides a denied page in the expansion and in the editor, Linked Mentions
-// included; resolveAnchor reads the index past the filter of `tag`. Runs as alice on gamma
+// included; every row equals its stored object, which the filter requires of a row it keeps; resolveAnchor reads the index past the filter of `tag`. Runs as alice on gamma
 // with pages of its own under RowCheck/, removed at the end.
 
 import test, { before, after } from "node:test";
@@ -100,6 +100,51 @@ return out`)) as Record<string, { all: number; without: number; mine: number; fo
     // metaPages lists only meta pages (Library/), none of the check's.
     if (f !== "metaPages") assert.ok(c.mine > 0, `index.${f}: the check's pages show under their own names`);
   }
+});
+
+test("rows: every row equals its getObjectByRef lookup under its own page, field for field (the filter keeps a row only then)", async () => {
+  const tags = ["task", "item", "page", "project", "rowcheck"];
+  const calls: Array<[string, string]> = [
+    ...ROW_FUNCTIONS.filter((f) => f !== "tag" && f !== "objects").map((f): [string, string] => [f, f === "subPages" ? `index.subPages("RowCheck")` : `index.${f}()`]),
+    ...tags.flatMap((t): Array<[string, string]> => [[`tag(${t})`, `index.tag(${JSON.stringify(t)})`], [`objects(${t})`, `index.objects(${JSON.stringify(t)})`]]),
+  ];
+  const r = (await lua(`${ROW_FILTER}
+local function differing(a, b)
+  if type(b) ~= "table" then return {"(no stored object)"} end
+  local out = {}
+  for k, v in pairs(a) do if not sbmcp_same(v, b[k]) then out[#out + 1] = tostring(k) end end
+  for k, _ in pairs(b) do if a[k] == nil then out[#out + 1] = tostring(k) end end
+  table.sort(out)
+  return out
+end
+local out = {}
+${calls.map(([f, call]) => `do
+  local rows = ${call}
+  local n, mine, bad = 0, 0, {}
+  for _, o in ipairs(query[[from o = rows]]) do
+    local p = sbmcp_page(o)
+    -- Rows that forge another page through attributes are meant to differ.
+    if p ~= nil and not string.find(o.text or "", "forged", 1, true) then
+      n = n + 1
+      if string.startsWith(p, "RowCheck/") then mine = mine + 1 end
+      local ok, stored = pcall(index.getObjectByRef, p, o.tag, o.ref)
+      if not ok then stored = nil end
+      if not sbmcp_same(o, stored) then bad[#bad + 1] = {ref = tostring(o.ref), fields = differing(o, stored)} end
+    end
+  end
+  out[${JSON.stringify(f)}] = {n = n, mine = mine, bad = bad}
+end`).join("\n")}
+return out`)) as Record<string, { n: number; mine: number; bad: Array<{ ref: string; fields: string[] }> }>;
+  for (const [f] of calls) {
+    const c = r[f];
+    assert.ok(c, `index.${f} ran`);
+    // An empty Lua table comes back as {}.
+    const bad = Array.isArray(c.bad) ? c.bad : [];
+    const shown = bad.slice(0, 5).map((b) => `${b.ref}: ${b.fields.join(", ")}`).join("; ");
+    assert.equal(bad.length, 0, `index.${f}: ${bad.length} of ${c.n} rows differ from their stored object in: ${shown}`);
+  }
+  // Positive control: the comparison ran over the check's own pages, not over nothing.
+  for (const f of ["pages", "items", "tasks", "links", "relations", "documents", "tag(task)", "objects(task)"]) assert.ok(r[f].mine > 0, `index.${f}: rows of the check's pages were compared`);
 });
 
 test("rows: the server's filter hides the denied page in the expansion, and in the editor's query and Linked Mentions; the allowed page shows; nothing is hidden without it", async () => {
