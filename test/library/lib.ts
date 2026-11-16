@@ -13,8 +13,8 @@ import { buildLibrary, LIBRARY_PAGE } from "../../scripts/build-library.ts";
 export { luaString, sleep, until };
 
 /** Runs a Lua script as dora in delta; throws on an error. */
-export async function lua<V = unknown>(script: string): Promise<V> {
-  const r = await sb.lua(T.dora, S.delta, script);
+export async function lua<V = unknown>(script: string, timeoutSec?: number): Promise<V> {
+  const r = await sb.lua(T.dora, S.delta, script, timeoutSec);
   if (r.status !== 200 || r.error !== undefined) throw new Error(`Lua failed (${r.status}): ${r.error ?? r.raw}\n${script}`);
   return r.result as V;
 }
@@ -68,28 +68,34 @@ export async function revisionOf(text: string): Promise<string> {
   return "sha256:" + createHash("sha256").update(text).digest("hex");
 }
 
-/**
- * Writes a proposal page as the server's tools write it, and waits until the
- * index lists it. The client indexes a page when it saves it; once in CI the
- * row was missing for 20 s. Suspected cause (not reproduced): a delete event
- * of an earlier test's page of the same name arrives late and drops the new
- * row. The wait is on the row; a page the index still lacks after a few
- * seconds is written again, which indexes it again. Every repeat is reported
- * on stderr, so that the log of a green run shows the race whenever it happens.
- */
+/** Writes a proposal page as the server's tools write it, and waits until the index lists it. */
 export async function writeProposal(name: string, proposal: Proposal) {
-  const text = formatProposal(proposal);
-  for (let attempt = 1; ; attempt++) {
-    await writePage(name, text);
-    const last = attempt === ATTEMPTS;
-    if (await indexed([name], last ? 20000 : 6000, false)) return;
-    const state = await indexState([name]);
-    if (last) assert.fail(`the index does not list ${name} (${state})`);
-    console.error(`writeProposal: ${name} not listed by the index after write ${attempt} of ${ATTEMPTS}, writing it again (${state})`);
-  }
+  await writePage(name, formatProposal(proposal));
+  await indexed([name]);
 }
 
-const ATTEMPTS = 3;
+/**
+ * SilverBullet indexes a page in the background (its docs: "can lag a few
+ * seconds"). The client queues a page it writes for indexing only when no other
+ * space operation is in flight; a write that overlaps one waits for the next
+ * file listing, a minute while the event stream is healthy. This is what
+ * `index.awaitPendingChanges()` does where SilverBullet has it (after 2.12.1):
+ * list the files, which queues every change the client has not seen, and wait
+ * until the index queue is empty. A listing asked for while other operations
+ * run is deferred until they end, so the waits below run it before every check.
+ */
+const PENDING = `if index.awaitPendingChanges then index.awaitPendingChanges() else space.listFiles() mq.awaitEmptyQueue("indexQueue") end`;
+
+/** Runs `script` after SilverBullet's listing until `done` holds for its result or `timeoutMs` has passed; returns whether it held and the last result. */
+async function afterListing<V>(script: string, done: (value: V) => boolean, timeoutMs: number): Promise<{ held: boolean; value: V }> {
+  const t0 = Date.now();
+  for (;;) {
+    const value = await lua<V>(`${PENDING}\n${script}`, 10);
+    if (done(value)) return { held: true, value };
+    if (Date.now() - t0 >= timeoutMs) return { held: false, value };
+    await sleep(300);
+  }
+}
 
 /** What the index lists of the proposal pages, and whether the files of `names` exist, as one line for a diagnostic. */
 async function indexState(names: string[]): Promise<string> {
@@ -98,43 +104,35 @@ async function indexState(names: string[]): Promise<string> {
   return `the index lists ${JSON.stringify(listed)}; ${files.join(", ")}`;
 }
 
-/** Waits until the index knows every one of these proposal pages; with `fail` it throws, saying what the index holds, otherwise it returns false. */
-export async function indexed(names: string[], timeoutMs = 20000, fail = true): Promise<boolean> {
+/** Waits until the index knows every one of these proposal pages; fails, saying what the index holds. */
+export async function indexed(names: string[], timeoutMs = 20000) {
   const list = `{${names.map((n) => luaString(n)).join(",")}}`;
-  const { value } = await until(
-    () =>
-      lua<boolean>(`local want = ${list}
+  const { held } = await afterListing<boolean>(
+    `local want = ${list}
 local have = {}
 for _, p in ipairs(query[[from p = index.tag "change-proposal" where p.tag == "page" select p.name]]) do have[p] = true end
 for _, n in ipairs(want) do if not have[n] then return false end end
-return true`),
+return true`,
+    (v) => v === true,
     timeoutMs,
-    300,
   );
-  if (value) return true;
-  if (fail) assert.fail(`the index does not list ${names.join(", ")} (${await indexState(names)})`);
-  return false;
+  if (!held) assert.fail(`the index does not list ${names.join(", ")} (${await indexState(names)})`);
 }
 
 /**
- * Waits until the first open proposal of the list is `name`: what "Go on" from
- * a page that is no proposal opens, read when the button is clicked. `indexed()`
- * passing earlier does not hold until then: a late delete event of an earlier
- * test's page of the same name can drop the row again (suspected, as in
- * `writeProposal`). A list that still lacks it after a few seconds is repaired
- * with `write`, and every repair is reported on stderr.
+ * Waits until the library's list of open proposals holds `name`, as its first
+ * entry with `first`: what Apply and Go on read when they are clicked. Fails,
+ * saying what the list and the index hold.
  */
-export async function firstOpen(name: string, write: () => Promise<void>) {
-  const first = () => lua<string | null>(`local e = proposals.entries()[1] return e and e.name or nil`);
-  for (let attempt = 1; ; attempt++) {
-    const last = attempt === ATTEMPTS;
-    const { value } = await until(async () => (await first()) === name, last ? 20000 : 6000, 300);
-    if (value) return;
-    const state = `the list starts with ${JSON.stringify(await first())}; ${await indexState([name])}`;
-    if (last) assert.fail(`${name} is not the first open proposal (${state})`);
-    console.error(`firstOpen: ${name} is not first after attempt ${attempt} of ${ATTEMPTS}, writing it again (${state})`);
-    await write();
-  }
+export async function listed(name: string, first = false, timeoutMs = 20000) {
+  // An empty Lua table comes back as {}, not []
+  const names = (v: unknown) => Object.values((v ?? {}) as Record<string, string>);
+  const { held, value } = await afterListing<unknown>(
+    `local out = {} for _, e in ipairs(proposals.entries()) do table.insert(out, e.name) end return out`,
+    (v) => (first ? names(v)[0] === name : names(v).includes(name)),
+    timeoutMs,
+  );
+  if (!held) assert.fail(`${name} is not ${first ? "the first" : "one"} of the open proposals: the list holds ${JSON.stringify(names(value))}; ${await indexState([name])}`);
 }
 
 /** Forgets what this client remembers of a group's batch and of closed proposals. */

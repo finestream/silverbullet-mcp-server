@@ -3,7 +3,7 @@
 
 import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { clean, click, configure, currentPage, documentState, forget, freshRuntime, indexed, lua, open, readPage, revisionOf, textOf, until, writePage } from "./lib.ts";
+import { clean, click, configure, currentPage, documentState, forget, freshRuntime, indexed, listed, lua, open, readPage, revisionOf, textOf, until, writePage } from "./lib.ts";
 import { formatProposal } from "../../src/proposal.ts";
 
 test.before(async () => {
@@ -80,6 +80,7 @@ test("batch: after the last of a batch, the next open proposal of the list; afte
   const others = await batch(1, "other", "T/Other");
   await configure({ afterLast: "T/Done" });
   await open(`review:${names[0]}`, ".proposals-position");
+  await listed(others[0]);
   await click(".proposals-header", "Apply");
   await page(`review:${others[0]}`);
   await counts("1 / 1");
