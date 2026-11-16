@@ -116,6 +116,27 @@ return true`),
   return false;
 }
 
+/**
+ * Waits until the first open proposal of the list is `name`: what "Go on" from
+ * a page that is no proposal opens, read when the button is clicked. `indexed()`
+ * passing earlier does not hold until then: a late delete event of an earlier
+ * test's page of the same name can drop the row again (suspected, as in
+ * `writeProposal`). A list that still lacks it after a few seconds is repaired
+ * with `write`, and every repair is reported on stderr.
+ */
+export async function firstOpen(name: string, write: () => Promise<void>) {
+  const first = () => lua<string | null>(`local e = proposals.entries()[1] return e and e.name or nil`);
+  for (let attempt = 1; ; attempt++) {
+    const last = attempt === ATTEMPTS;
+    const { value } = await until(async () => (await first()) === name, last ? 20000 : 6000, 300);
+    if (value) return;
+    const state = `the list starts with ${JSON.stringify(await first())}; ${await indexState([name])}`;
+    if (last) assert.fail(`${name} is not the first open proposal (${state})`);
+    console.error(`firstOpen: ${name} is not first after attempt ${attempt} of ${ATTEMPTS}, writing it again (${state})`);
+    await write();
+  }
+}
+
 /** Forgets what this client remembers of a group's batch and of closed proposals. */
 export async function forget(group: string | undefined, names: string[] = []) {
   await lua(`proposals.closed = {}

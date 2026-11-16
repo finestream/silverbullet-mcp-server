@@ -5,7 +5,7 @@
 import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { REVISION } from "../../src/proposal-cases.ts";
-import { clean, click, configure, currentPage, forget, freshRuntime, indexed, lua, open, removePage, revisionOf, shown, until, writePage, writeProposal } from "./lib.ts";
+import { clean, click, configure, currentPage, documentState, forget, firstOpen, freshRuntime, indexed, lua, open, removePage, revisionOf, shown, until, writePage, writeProposal } from "./lib.ts";
 import { formatProposal } from "../../src/proposal.ts";
 
 test.before(async () => {
@@ -23,12 +23,16 @@ const names = async () => Object.values(await lua<Record<string, string>>(`local
 
 /** Proposals that each delete a page of their own, so they never go stale. */
 async function deletes(group: string | undefined, list: string[]) {
-  for (const n of list) {
-    const target = `T/${n.slice(2)}`;
-    await writePage(target, "x\n");
-    await writePage(n, formatProposal({ action: "delete", target, revision: await revisionOf("x\n"), group, reason: "" }));
-  }
+  const write = async () => {
+    for (const n of list) {
+      const target = `T/${n.slice(2)}`;
+      await writePage(target, "x\n");
+      await writePage(n, formatProposal({ action: "delete", target, revision: await revisionOf("x\n"), group, reason: "" }));
+    }
+  };
+  await write();
   await indexed(list);
+  return write;
 }
 
 test("correctness: a proposal written under the name of a closed one is a new, open proposal", async () => {
@@ -72,12 +76,13 @@ test("correctness: Go on from a closed proposal stays in its group", async () =>
 });
 
 test("correctness: Go on from a page that is no proposal opens the first of the list", async () => {
-  await deletes("8", ["P/g8 1"]);
+  const write = await deletes("8", ["P/g8 1"]);
   await writePage("P/broken", "---\ntags: change-proposal\nformat: 0\n---\n");
   assert.match(await open("review:P/broken", ".proposals-notice"), /not a proposal that can be reviewed: format 0/);
+  await firstOpen("P/g8 1", write);
   await click(".proposals-header", "Go on");
   const { value } = await page("review:P/g8 1");
-  assert.ok(value, `went to ${await currentPage()}`);
+  assert.ok(value, `went to ${await currentPage()} (${await documentState()})`);
 });
 
 test("correctness: a changed code block is shown whole, its lines are not read as headings", async () => {
