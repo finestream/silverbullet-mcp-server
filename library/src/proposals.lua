@@ -469,6 +469,89 @@ function proposals.entries(target)
 end
 
 -----------------------------------------------------------------------
+-- proposals.indexWait, proposals.indexPoll
+--
+-- How long proposals.awaitIndex waits at most, and how long it pauses
+-- between two checks, in milliseconds. Fixed bounds: a click that goes
+-- on must open a page soon, even when the index does not catch up
+-- (SilverBullet documents that it can lag a few seconds).
+-----------------------------------------------------------------------
+proposals.indexWait = 3000
+proposals.indexPoll = 100
+
+-----------------------------------------------------------------------
+-- proposals.indexCurrent(files)
+--
+-- Whether the index lists the same pages in the proposal folder as the
+-- file listing `files` (space.listFiles()).
+-----------------------------------------------------------------------
+function proposals.indexCurrent(files)
+	local prefix = proposals.folders()
+	if not prefix then return true end
+	local listed, count = {}, 0
+	for _, file in ipairs(files) do
+		if string.startsWith(file.name, prefix) and string.endsWith(file.name, ".md") then
+			listed[string.sub(file.name, 1, -4)] = true
+			count = count + 1
+		end
+	end
+	local indexed = 0
+	for _, name in ipairs(query[[from p = index.tag "page" where string.startsWith(p.name, prefix) select p.name]]) do
+		if not listed[name] then return false end
+		indexed = indexed + 1
+	end
+	return indexed == count
+end
+
+-----------------------------------------------------------------------
+-- proposals.awaitIndex()
+--
+-- Waits until the index lists the pages of the proposal folder as the
+-- space does: a proposal the server just wrote is in it, one deleted
+-- is gone. Each check runs what SilverBullet runs for this: a file
+-- listing, which queues every change this client has not seen, then
+-- index.awaitPendingChanges() where it exists, otherwise until the
+-- index queue is empty. A listing asked for while other operations of
+-- the client run only takes effect once they end, so the check repeats
+-- until it holds, for at most proposals.indexWait; after that, or when
+-- a check fails, the caller goes on with the index as it is.
+--
+-- proposals.list() does not wait: it renders inside pages, which a
+-- wait would hold up.
+--
+-- Returns:
+--   true when the index caught up, false otherwise.
+-----------------------------------------------------------------------
+function proposals.awaitIndex()
+	return js.new(js.window.Promise, function(resolve)
+		local done = false
+		local function finish(value)
+			if not done then
+				done = true
+				resolve(value)
+			end
+		end
+		js.window.setTimeout(function() finish(false) end, proposals.indexWait)
+		js.window.setTimeout(function()
+			local ok, current = pcall(function()
+				while not done do
+					local files = space.listFiles()
+					if index.awaitPendingChanges then
+						index.awaitPendingChanges()
+					else
+						mq.awaitEmptyQueue("indexQueue")
+					end
+					if proposals.indexCurrent(files) then return true end
+					js.new(js.window.Promise, function(wake) js.window.setTimeout(wake, proposals.indexPoll) end)
+				end
+				return false
+			end)
+			finish(ok and current)
+		end, 0)
+	end)
+end
+
+-----------------------------------------------------------------------
 -- proposals.batchKey(group)
 --
 -- Where the client keeps what it remembers of a batch.

@@ -4,7 +4,7 @@ tags: meta/library
 author: finestream
 description: "Review change proposals made through the SilverBullet MCP server: a list, a diff per proposal, and Apply, Edit and Reject with your own rights."
 pageDecoration.prefix: "📝 "
-version: "0.8.2"
+version: "0.8.3"
 proposalFormat: 1
 ---
 > **note**
@@ -94,7 +94,7 @@ The first lists every open proposal, the second only those for one page (put it 
 -----------------------------------------------------------------------
 proposals = proposals or {}
 
-proposals.version = "0.8.2"
+proposals.version = "0.8.3"
 proposals.format = 1
 proposals.tag = "change-proposal"
 
@@ -543,6 +543,89 @@ function proposals.entries(target)
 		return a.name < b.name
 	end)
 	return out
+end
+
+-----------------------------------------------------------------------
+-- proposals.indexWait, proposals.indexPoll
+--
+-- How long proposals.awaitIndex waits at most, and how long it pauses
+-- between two checks, in milliseconds. Fixed bounds: a click that goes
+-- on must open a page soon, even when the index does not catch up
+-- (SilverBullet documents that it can lag a few seconds).
+-----------------------------------------------------------------------
+proposals.indexWait = 3000
+proposals.indexPoll = 100
+
+-----------------------------------------------------------------------
+-- proposals.indexCurrent(files)
+--
+-- Whether the index lists the same pages in the proposal folder as the
+-- file listing `files` (space.listFiles()).
+-----------------------------------------------------------------------
+function proposals.indexCurrent(files)
+	local prefix = proposals.folders()
+	if not prefix then return true end
+	local listed, count = {}, 0
+	for _, file in ipairs(files) do
+		if string.startsWith(file.name, prefix) and string.endsWith(file.name, ".md") then
+			listed[string.sub(file.name, 1, -4)] = true
+			count = count + 1
+		end
+	end
+	local indexed = 0
+	for _, name in ipairs(query[[from p = index.tag "page" where string.startsWith(p.name, prefix) select p.name]]) do
+		if not listed[name] then return false end
+		indexed = indexed + 1
+	end
+	return indexed == count
+end
+
+-----------------------------------------------------------------------
+-- proposals.awaitIndex()
+--
+-- Waits until the index lists the pages of the proposal folder as the
+-- space does: a proposal the server just wrote is in it, one deleted
+-- is gone. Each check runs what SilverBullet runs for this: a file
+-- listing, which queues every change this client has not seen, then
+-- index.awaitPendingChanges() where it exists, otherwise until the
+-- index queue is empty. A listing asked for while other operations of
+-- the client run only takes effect once they end, so the check repeats
+-- until it holds, for at most proposals.indexWait; after that, or when
+-- a check fails, the caller goes on with the index as it is.
+--
+-- proposals.list() does not wait: it renders inside pages, which a
+-- wait would hold up.
+--
+-- Returns:
+--   true when the index caught up, false otherwise.
+-----------------------------------------------------------------------
+function proposals.awaitIndex()
+	return js.new(js.window.Promise, function(resolve)
+		local done = false
+		local function finish(value)
+			if not done then
+				done = true
+				resolve(value)
+			end
+		end
+		js.window.setTimeout(function() finish(false) end, proposals.indexWait)
+		js.window.setTimeout(function()
+			local ok, current = pcall(function()
+				while not done do
+					local files = space.listFiles()
+					if index.awaitPendingChanges then
+						index.awaitPendingChanges()
+					else
+						mq.awaitEmptyQueue("indexQueue")
+					end
+					if proposals.indexCurrent(files) then return true end
+					js.new(js.window.Promise, function(wake) js.window.setTimeout(wake, proposals.indexPoll) end)
+				end
+				return false
+			end)
+			finish(ok and current)
+		end, 0)
+	end)
 end
 
 -----------------------------------------------------------------------
@@ -1759,25 +1842,35 @@ end
 --
 -- After a proposal is closed: opens the review of the next open one
 -- (proposals.successor), or the page configured as `afterLast` when
--- none is left.
+-- none is left. Waits for the index first (proposals.awaitIndex).
 --
 -- Returns:
 --   The page it opened.
 -----------------------------------------------------------------------
 function proposals.goOn(name, group)
+	proposals.awaitIndex()
 	local following = proposals.successor(name, group)
 	return proposals.openNext(following)
 end
 
 -----------------------------------------------------------------------
--- proposals.goOnAnywhere()
+-- proposals.goOnAnywhere(from)
 --
--- Go on from a page that is no proposal of a known group: opens the
--- review of the first open proposal of the list, or `afterLast`.
+-- Go on from a page that is no proposal of a known group (`from`, its
+-- name): opens the review of the first open proposal of the list other
+-- than `from` that can be read, or `afterLast`. One that cannot be read
+-- is skipped, so two of them never send the reviewer back and forth;
+-- the list still shows them, with Reject. Waits for the index first
+-- (proposals.awaitIndex).
 -----------------------------------------------------------------------
-function proposals.goOnAnywhere()
-	local first = proposals.entries()[1]
-	return proposals.openNext(first and first.name)
+function proposals.goOnAnywhere(from)
+	proposals.awaitIndex()
+	for _, entry in ipairs(proposals.entries()) do
+		if entry.name ~= from and proposals.read(entry.name) then
+			return proposals.openNext(entry.name)
+		end
+	end
+	return proposals.openNext(nil)
 end
 
 -- opens the review of `following`, or `afterLast` when it is nil
@@ -1933,7 +2026,7 @@ function proposals.reviewView(name)
 		header.appendChild(proposals.el("span", { style = "font-weight:bold;" }, name))
 		header.appendChild(dom.span { style = "flex:1;" })
 		header.appendChild(proposals.button("Go on", function()
-			if record then proposals.goOn(name, record.group) else proposals.goOnAnywhere() end
+			if record then proposals.goOn(name, record.group) else proposals.goOnAnywhere(name) end
 		end))
 		if not outcome and proposals.rejectable(name) then
 			header.appendChild(proposals.button("Reject", function()

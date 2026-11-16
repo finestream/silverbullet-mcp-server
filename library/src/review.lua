@@ -101,25 +101,35 @@ end
 --
 -- After a proposal is closed: opens the review of the next open one
 -- (proposals.successor), or the page configured as `afterLast` when
--- none is left.
+-- none is left. Waits for the index first (proposals.awaitIndex).
 --
 -- Returns:
 --   The page it opened.
 -----------------------------------------------------------------------
 function proposals.goOn(name, group)
+	proposals.awaitIndex()
 	local following = proposals.successor(name, group)
 	return proposals.openNext(following)
 end
 
 -----------------------------------------------------------------------
--- proposals.goOnAnywhere()
+-- proposals.goOnAnywhere(from)
 --
--- Go on from a page that is no proposal of a known group: opens the
--- review of the first open proposal of the list, or `afterLast`.
+-- Go on from a page that is no proposal of a known group (`from`, its
+-- name): opens the review of the first open proposal of the list other
+-- than `from` that can be read, or `afterLast`. One that cannot be read
+-- is skipped, so two of them never send the reviewer back and forth;
+-- the list still shows them, with Reject. Waits for the index first
+-- (proposals.awaitIndex).
 -----------------------------------------------------------------------
-function proposals.goOnAnywhere()
-	local first = proposals.entries()[1]
-	return proposals.openNext(first and first.name)
+function proposals.goOnAnywhere(from)
+	proposals.awaitIndex()
+	for _, entry in ipairs(proposals.entries()) do
+		if entry.name ~= from and proposals.read(entry.name) then
+			return proposals.openNext(entry.name)
+		end
+	end
+	return proposals.openNext(nil)
 end
 
 -- opens the review of `following`, or `afterLast` when it is nil
@@ -275,7 +285,7 @@ function proposals.reviewView(name)
 		header.appendChild(proposals.el("span", { style = "font-weight:bold;" }, name))
 		header.appendChild(dom.span { style = "flex:1;" })
 		header.appendChild(proposals.button("Go on", function()
-			if record then proposals.goOn(name, record.group) else proposals.goOnAnywhere() end
+			if record then proposals.goOn(name, record.group) else proposals.goOnAnywhere(name) end
 		end))
 		if not outcome and proposals.rejectable(name) then
 			header.appendChild(proposals.button("Reject", function()
