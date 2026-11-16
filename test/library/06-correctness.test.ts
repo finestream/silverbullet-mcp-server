@@ -5,7 +5,7 @@
 import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { REVISION } from "../../src/proposal-cases.ts";
-import { clean, click, configure, currentPage, forget, freshRuntime, indexed, lua, open, removePage, revisionOf, shown, until, writePage, writeProposal } from "./lib.ts";
+import { clean, click, configure, currentPage, documentState, forget, freshRuntime, indexed, listed, lua, open, removePage, revisionOf, shown, until, writePage, writeProposal } from "./lib.ts";
 import { formatProposal } from "../../src/proposal.ts";
 
 test.before(async () => {
@@ -75,9 +75,10 @@ test("correctness: Go on from a page that is no proposal opens the first of the 
   await deletes("8", ["P/g8 1"]);
   await writePage("P/broken", "---\ntags: change-proposal\nformat: 0\n---\n");
   assert.match(await open("review:P/broken", ".proposals-notice"), /not a proposal that can be reviewed: format 0/);
+  await listed("P/g8 1", true);
   await click(".proposals-header", "Go on");
   const { value } = await page("review:P/g8 1");
-  assert.ok(value, `went to ${await currentPage()}`);
+  assert.ok(value, `went to ${await currentPage()} (${await documentState()})`);
 });
 
 test("correctness: a changed code block is shown whole, its lines are not read as headings", async () => {
