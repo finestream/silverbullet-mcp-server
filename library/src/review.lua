@@ -124,12 +124,9 @@ end
 -----------------------------------------------------------------------
 function proposals.goOnAnywhere(from)
 	proposals.awaitIndex()
-	for _, entry in ipairs(proposals.entries()) do
-		if entry.name ~= from and proposals.read(entry.name) then
-			return proposals.openNext(entry.name)
-		end
-	end
-	return proposals.openNext(nil)
+	local names = {}
+	for _, entry in ipairs(proposals.entries()) do table.insert(names, entry.name) end
+	return proposals.openNext(proposals.firstReviewable(names, from))
 end
 
 -- opens the review of `following`, or `afterLast` when it is nil
@@ -144,16 +141,36 @@ end
 --
 -- Runs an action of the review (apply, accept, reject), which returns
 -- true and the proposal, or false and the reason: goes on to the next
--- proposal, or says why not and redraws.
+-- proposal, or says why not and redraws. A click while another runs
+-- is ignored (proposals.exclusive).
 -----------------------------------------------------------------------
 function proposals.act(name, action)
-	local ok, result = action()
-	if ok then
-		proposals.goOn(name, result and result.group)
-	else
-		editor.flashNotification(name .. ": " .. tostring(result), "error")
-		proposals.refresh()
-	end
+	proposals.exclusive(function()
+		local ok, result = action()
+		if ok then
+			proposals.goOn(name, result and result.group)
+		else
+			editor.flashNotification(name .. ": " .. tostring(result), "error")
+			proposals.refresh()
+		end
+	end)
+end
+
+-----------------------------------------------------------------------
+-- proposals.exclusive(run)
+--
+-- Runs a click's work unless the work of another click still runs in
+-- this client: an action and the go-on after it can take a few
+-- seconds (proposals.awaitIndex), and a second click meanwhile would
+-- act on a proposal already closed or race the first navigation. That
+-- click is ignored.
+-----------------------------------------------------------------------
+function proposals.exclusive(run)
+	if proposals.running then return end
+	proposals.running = true
+	local ok, err = pcall(run)
+	proposals.running = false
+	if not ok then error(err, 0) end
 end
 
 -----------------------------------------------------------------------
@@ -285,7 +302,9 @@ function proposals.reviewView(name)
 		header.appendChild(proposals.el("span", { style = "font-weight:bold;" }, name))
 		header.appendChild(dom.span { style = "flex:1;" })
 		header.appendChild(proposals.button("Go on", function()
-			if record then proposals.goOn(name, record.group) else proposals.goOnAnywhere(name) end
+			proposals.exclusive(function()
+				if record then proposals.goOn(name, record.group) else proposals.goOnAnywhere(name) end
+			end)
 		end))
 		if not outcome and proposals.rejectable(name) then
 			header.appendChild(proposals.button("Reject", function()
@@ -364,7 +383,9 @@ function proposals.reviewView(name)
 
 	if proposal.outcome ~= "open" then
 		body.appendChild(proposals.notice("This proposal is " .. proposal.outcome .. "; nothing to do.", "transparent"))
-		header.appendChild(proposals.button("Go on", function() proposals.goOn(name, group) end))
+		header.appendChild(proposals.button("Go on", function()
+			proposals.exclusive(function() proposals.goOn(name, group) end)
+		end))
 		return container
 	end
 

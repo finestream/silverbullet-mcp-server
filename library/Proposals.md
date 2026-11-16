@@ -559,8 +559,12 @@ proposals.indexPoll = 100
 -----------------------------------------------------------------------
 -- proposals.indexCurrent(files)
 --
--- Whether the index lists the same pages in the proposal folder as the
--- file listing `files` (space.listFiles()).
+-- Whether the index holds the pages of the proposal folder as the file
+-- listing `files` (space.listFiles()) has them: the same names, each
+-- at the same modification time, so a proposal rewritten elsewhere
+-- (closed with deleteClosed = false, or written again) counts as well.
+-- The index keeps a page's modification time as a local date without
+-- a zone; it is read back as local time.
 -----------------------------------------------------------------------
 function proposals.indexCurrent(files)
 	local prefix = proposals.folders()
@@ -568,13 +572,14 @@ function proposals.indexCurrent(files)
 	local listed, count = {}, 0
 	for _, file in ipairs(files) do
 		if string.startsWith(file.name, prefix) and string.endsWith(file.name, ".md") then
-			listed[string.sub(file.name, 1, -4)] = true
+			listed[string.sub(file.name, 1, -4)] = file.lastModified
 			count = count + 1
 		end
 	end
 	local indexed = 0
-	for _, name in ipairs(query[[from p = index.tag "page" where string.startsWith(p.name, prefix) select p.name]]) do
-		if not listed[name] then return false end
+	for _, p in ipairs(query[[from p = index.tag "page" where string.startsWith(p.name, prefix)]]) do
+		local modified = listed[p.name]
+		if not modified or js.new(js.window.Date, p.lastModified).getTime() ~= modified then return false end
 		indexed = indexed + 1
 	end
 	return indexed == count
@@ -583,15 +588,16 @@ end
 -----------------------------------------------------------------------
 -- proposals.awaitIndex()
 --
--- Waits until the index lists the pages of the proposal folder as the
--- space does: a proposal the server just wrote is in it, one deleted
--- is gone. Each check runs what SilverBullet runs for this: a file
--- listing, which queues every change this client has not seen, then
--- index.awaitPendingChanges() where it exists, otherwise until the
--- index queue is empty. A listing asked for while other operations of
--- the client run only takes effect once they end, so the check repeats
--- until it holds, for at most proposals.indexWait; after that, or when
--- a check fails, the caller goes on with the index as it is.
+-- Waits until the index holds the pages of the proposal folder as the
+-- space does (proposals.indexCurrent): a proposal the server just
+-- wrote is in it, one deleted is gone, one rewritten is read again.
+-- Where SilverBullet has index.awaitPendingChanges(), that call does
+-- it. Otherwise each check runs what that call runs: a file listing,
+-- which queues every change this client has not seen, and a wait until
+-- the index queue is empty. A listing asked for while other operations
+-- of the client run only takes effect once they end, so the check
+-- repeats until it holds, for at most proposals.indexWait; after that,
+-- or when a check fails, the caller goes on with the index as it is.
 --
 -- proposals.list() does not wait: it renders inside pages, which a
 -- wait would hold up.
@@ -601,23 +607,26 @@ end
 -----------------------------------------------------------------------
 function proposals.awaitIndex()
 	return js.new(js.window.Promise, function(resolve)
-		local done = false
+		local done, deadline = false, nil
 		local function finish(value)
 			if not done then
 				done = true
+				js.window.clearTimeout(deadline)
 				resolve(value)
 			end
 		end
-		js.window.setTimeout(function() finish(false) end, proposals.indexWait)
+		deadline = js.window.setTimeout(function() finish(false) end, proposals.indexWait)
 		js.window.setTimeout(function()
 			local ok, current = pcall(function()
+				if index.awaitPendingChanges then
+					index.awaitPendingChanges()
+					return true
+				end
 				while not done do
 					local files = space.listFiles()
-					if index.awaitPendingChanges then
-						index.awaitPendingChanges()
-					else
-						mq.awaitEmptyQueue("indexQueue")
-					end
+					if done then break end
+					mq.awaitEmptyQueue("indexQueue")
+					if done then break end
 					if proposals.indexCurrent(files) then return true end
 					js.new(js.window.Promise, function(wake) js.window.setTimeout(wake, proposals.indexPoll) end)
 				end
@@ -709,23 +718,38 @@ function proposals.neighbours(name, group, batch)
 end
 
 -----------------------------------------------------------------------
+-- proposals.firstReviewable(names, except)
+--
+-- The first of `names` other than `except` that can be reviewed
+-- (proposals.read can read it), or nil. Pages that cannot be reviewed
+-- stay in the list, with Reject, but going on never opens them.
+-----------------------------------------------------------------------
+function proposals.firstReviewable(names, except)
+	for _, candidate in ipairs(names) do
+		if candidate ~= except and proposals.read(candidate) then return candidate end
+	end
+	return nil
+end
+
+-----------------------------------------------------------------------
 -- proposals.successor(name, group)
 --
 -- The proposal to review once `name` is closed: the next open one of
 -- its batch, then the first open one of the batch, then the first open
--- proposal of the list; nil when none is left.
+-- proposal of the list, each only when it can be reviewed
+-- (proposals.firstReviewable); nil when none is left.
 -----------------------------------------------------------------------
 function proposals.successor(name, group)
 	local batch = proposals.batch(name, group)
-	local _, following = proposals.neighbours(name, group, batch)
-	if following then return following end
-	for _, candidate in ipairs(batch.names) do
-		if batch.open[candidate] and candidate ~= name then return candidate end
+	local candidates = {}
+	for i, candidate in ipairs(batch.names) do
+		if i > batch.index and batch.open[candidate] then table.insert(candidates, candidate) end
 	end
-	for _, entry in ipairs(proposals.entries()) do
-		if entry.name ~= name then return entry.name end
+	for i, candidate in ipairs(batch.names) do
+		if i < batch.index and batch.open[candidate] then table.insert(candidates, candidate) end
 	end
-	return nil
+	for _, entry in ipairs(proposals.entries()) do table.insert(candidates, entry.name) end
+	return proposals.firstReviewable(candidates, name)
 end
 
 -----------------------------------------------------------------------
@@ -1865,12 +1889,9 @@ end
 -----------------------------------------------------------------------
 function proposals.goOnAnywhere(from)
 	proposals.awaitIndex()
-	for _, entry in ipairs(proposals.entries()) do
-		if entry.name ~= from and proposals.read(entry.name) then
-			return proposals.openNext(entry.name)
-		end
-	end
-	return proposals.openNext(nil)
+	local names = {}
+	for _, entry in ipairs(proposals.entries()) do table.insert(names, entry.name) end
+	return proposals.openNext(proposals.firstReviewable(names, from))
 end
 
 -- opens the review of `following`, or `afterLast` when it is nil
@@ -1885,16 +1906,36 @@ end
 --
 -- Runs an action of the review (apply, accept, reject), which returns
 -- true and the proposal, or false and the reason: goes on to the next
--- proposal, or says why not and redraws.
+-- proposal, or says why not and redraws. A click while another runs
+-- is ignored (proposals.exclusive).
 -----------------------------------------------------------------------
 function proposals.act(name, action)
-	local ok, result = action()
-	if ok then
-		proposals.goOn(name, result and result.group)
-	else
-		editor.flashNotification(name .. ": " .. tostring(result), "error")
-		proposals.refresh()
-	end
+	proposals.exclusive(function()
+		local ok, result = action()
+		if ok then
+			proposals.goOn(name, result and result.group)
+		else
+			editor.flashNotification(name .. ": " .. tostring(result), "error")
+			proposals.refresh()
+		end
+	end)
+end
+
+-----------------------------------------------------------------------
+-- proposals.exclusive(run)
+--
+-- Runs a click's work unless the work of another click still runs in
+-- this client: an action and the go-on after it can take a few
+-- seconds (proposals.awaitIndex), and a second click meanwhile would
+-- act on a proposal already closed or race the first navigation. That
+-- click is ignored.
+-----------------------------------------------------------------------
+function proposals.exclusive(run)
+	if proposals.running then return end
+	proposals.running = true
+	local ok, err = pcall(run)
+	proposals.running = false
+	if not ok then error(err, 0) end
 end
 
 -----------------------------------------------------------------------
@@ -2026,7 +2067,9 @@ function proposals.reviewView(name)
 		header.appendChild(proposals.el("span", { style = "font-weight:bold;" }, name))
 		header.appendChild(dom.span { style = "flex:1;" })
 		header.appendChild(proposals.button("Go on", function()
-			if record then proposals.goOn(name, record.group) else proposals.goOnAnywhere(name) end
+			proposals.exclusive(function()
+				if record then proposals.goOn(name, record.group) else proposals.goOnAnywhere(name) end
+			end)
 		end))
 		if not outcome and proposals.rejectable(name) then
 			header.appendChild(proposals.button("Reject", function()
@@ -2105,7 +2148,9 @@ function proposals.reviewView(name)
 
 	if proposal.outcome ~= "open" then
 		body.appendChild(proposals.notice("This proposal is " .. proposal.outcome .. "; nothing to do.", "transparent"))
-		header.appendChild(proposals.button("Go on", function() proposals.goOn(name, group) end))
+		header.appendChild(proposals.button("Go on", function()
+			proposals.exclusive(function() proposals.goOn(name, group) end)
+		end))
 		return container
 	end
 
