@@ -469,6 +469,98 @@ function proposals.entries(target)
 end
 
 -----------------------------------------------------------------------
+-- proposals.indexWait, proposals.indexPoll
+--
+-- How long proposals.awaitIndex waits at most, and how long it pauses
+-- between two checks, in milliseconds. Fixed bounds: a click that goes
+-- on must open a page soon, even when the index does not catch up
+-- (SilverBullet documents that it can lag a few seconds).
+-----------------------------------------------------------------------
+proposals.indexWait = 3000
+proposals.indexPoll = 100
+
+-----------------------------------------------------------------------
+-- proposals.indexCurrent(files)
+--
+-- Whether the index holds the pages of the proposal folder as the file
+-- listing `files` (space.listFiles()) has them: the same names, each
+-- at the same modification time, so a proposal rewritten elsewhere
+-- (closed with deleteClosed = false, or written again) counts as well.
+-- The index keeps a page's modification time as a local date without
+-- a zone; it is read back as local time.
+-----------------------------------------------------------------------
+function proposals.indexCurrent(files)
+	local prefix = proposals.folders()
+	if not prefix then return true end
+	local listed, count = {}, 0
+	for _, file in ipairs(files) do
+		if string.startsWith(file.name, prefix) and string.endsWith(file.name, ".md") then
+			listed[string.sub(file.name, 1, -4)] = file.lastModified
+			count = count + 1
+		end
+	end
+	local indexed = 0
+	for _, p in ipairs(query[[from p = index.tag "page" where string.startsWith(p.name, prefix)]]) do
+		local modified = listed[p.name]
+		if not modified or js.new(js.window.Date, p.lastModified).getTime() ~= modified then return false end
+		indexed = indexed + 1
+	end
+	return indexed == count
+end
+
+-----------------------------------------------------------------------
+-- proposals.awaitIndex()
+--
+-- Waits until the index holds the pages of the proposal folder as the
+-- space does (proposals.indexCurrent): a proposal the server just
+-- wrote is in it, one deleted is gone, one rewritten is read again.
+-- Where SilverBullet has index.awaitPendingChanges(), that call does
+-- it. Otherwise each check runs what that call runs: a file listing,
+-- which queues every change this client has not seen, and a wait until
+-- the index queue is empty. A listing asked for while other operations
+-- of the client run only takes effect once they end, so the check
+-- repeats until it holds, for at most proposals.indexWait; after that,
+-- or when a check fails, the caller goes on with the index as it is.
+--
+-- proposals.list() does not wait: it renders inside pages, which a
+-- wait would hold up.
+--
+-- Returns:
+--   true when the index caught up, false otherwise.
+-----------------------------------------------------------------------
+function proposals.awaitIndex()
+	return js.new(js.window.Promise, function(resolve)
+		local done, deadline = false, nil
+		local function finish(value)
+			if not done then
+				done = true
+				js.window.clearTimeout(deadline)
+				resolve(value)
+			end
+		end
+		deadline = js.window.setTimeout(function() finish(false) end, proposals.indexWait)
+		js.window.setTimeout(function()
+			local ok, current = pcall(function()
+				if index.awaitPendingChanges then
+					index.awaitPendingChanges()
+					return true
+				end
+				while not done do
+					local files = space.listFiles()
+					if done then break end
+					mq.awaitEmptyQueue("indexQueue")
+					if done then break end
+					if proposals.indexCurrent(files) then return true end
+					js.new(js.window.Promise, function(wake) js.window.setTimeout(wake, proposals.indexPoll) end)
+				end
+				return false
+			end)
+			finish(ok and current)
+		end, 0)
+	end)
+end
+
+-----------------------------------------------------------------------
 -- proposals.batchKey(group)
 --
 -- Where the client keeps what it remembers of a batch.
@@ -549,23 +641,38 @@ function proposals.neighbours(name, group, batch)
 end
 
 -----------------------------------------------------------------------
+-- proposals.firstReviewable(names, except)
+--
+-- The first of `names` other than `except` that can be reviewed
+-- (proposals.read can read it), or nil. Pages that cannot be reviewed
+-- stay in the list, with Reject, but going on never opens them.
+-----------------------------------------------------------------------
+function proposals.firstReviewable(names, except)
+	for _, candidate in ipairs(names) do
+		if candidate ~= except and proposals.read(candidate) then return candidate end
+	end
+	return nil
+end
+
+-----------------------------------------------------------------------
 -- proposals.successor(name, group)
 --
 -- The proposal to review once `name` is closed: the next open one of
 -- its batch, then the first open one of the batch, then the first open
--- proposal of the list; nil when none is left.
+-- proposal of the list, each only when it can be reviewed
+-- (proposals.firstReviewable); nil when none is left.
 -----------------------------------------------------------------------
 function proposals.successor(name, group)
 	local batch = proposals.batch(name, group)
-	local _, following = proposals.neighbours(name, group, batch)
-	if following then return following end
-	for _, candidate in ipairs(batch.names) do
-		if batch.open[candidate] and candidate ~= name then return candidate end
+	local candidates = {}
+	for i, candidate in ipairs(batch.names) do
+		if i > batch.index and batch.open[candidate] then table.insert(candidates, candidate) end
 	end
-	for _, entry in ipairs(proposals.entries()) do
-		if entry.name ~= name then return entry.name end
+	for i, candidate in ipairs(batch.names) do
+		if i < batch.index and batch.open[candidate] then table.insert(candidates, candidate) end
 	end
-	return nil
+	for _, entry in ipairs(proposals.entries()) do table.insert(candidates, entry.name) end
+	return proposals.firstReviewable(candidates, name)
 end
 
 -----------------------------------------------------------------------
