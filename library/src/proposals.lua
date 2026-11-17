@@ -390,6 +390,22 @@ function proposals.exists(name)
 end
 
 -----------------------------------------------------------------------
+-- proposals.suffixPage(name, except)
+--
+-- The page other than `except` that SilverBullet resolves the name to
+-- by path suffix ("B/p" to "C/B/p"), or nil. A link to the name would
+-- point at it, so the name is not free for a move.
+-----------------------------------------------------------------------
+function proposals.suffixPage(name, except)
+	if not space.pageExists(name) then return nil end
+	local tail = "/" .. name
+	for _, page in ipairs(space.listPages()) do
+		if page.name ~= except and string.sub(page.name, -#tail) == tail then return page.name end
+	end
+	return nil
+end
+
+-----------------------------------------------------------------------
 -- proposals.evaluate(proposal)
 --
 -- Tests a proposal against its target as it is now.
@@ -432,6 +448,12 @@ function proposals.evaluate(proposal)
 		if proposals.exists(proposal.to) then
 			result.state = "stale"
 			result.why = "a page named " .. proposal.to .. " exists already"
+		else
+			local other = proposals.suffixPage(proposal.to, proposal.target)
+			if other then
+				result.state = "stale"
+				result.why = "the name " .. proposal.to .. " would resolve to the page " .. other .. ", and links to it would point at the moved page"
+			end
 		end
 	end
 	return result

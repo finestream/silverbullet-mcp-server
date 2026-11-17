@@ -128,6 +128,15 @@ test("review: a move out of a folder to a name that exists only as a path suffix
   await until(async () => (await readPage("T/p")) !== null, 15000);
   assert.equal(await readPage("Q/T/p"), null);
   assert.equal(await readPage("T/p"), text);
+  assert.equal(await readPage("P/out"), null, "Apply closed the proposal");
+});
+
+test("review: a move to a name that resolves by path suffix to another page is stale and names it", async () => {
+  await writePage("Q/T/shadow", "other\n");
+  await writePage("T/x", "x\n");
+  await writeProposal("P/shadow", { action: "move", target: "T/x", to: "T/shadow", revision: await revisionOf("x\n"), reason: "" });
+  const notice = await open("review:P/shadow", ".proposals-notice");
+  assert.match(notice, /Cannot be applied: the name T\/shadow would resolve to the page Q\/T\/shadow/);
 });
 
 test("review: a move into a folder applies and reports success", async () => {
