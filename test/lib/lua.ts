@@ -7,6 +7,15 @@ import { luaString } from "../../src/render.ts";
 export { luaString };
 
 /**
+ * Waits until SilverBullet's index has caught up with every file written so far. The index is
+ * built in the background and a page is indexed in steps, so a query can list a row whose stored
+ * object (`index.getObjectByRef`) is not there yet. This is what `index.awaitPendingChanges()`
+ * does where the release has it (after 2.12.1): list the files, which queues every change the
+ * client has not seen, and wait until the index queue is empty.
+ */
+export const AWAIT_INDEX = `if index.awaitPendingChanges then index.awaitPendingChanges() else space.listFiles() mq.awaitEmptyQueue("indexQueue") end`;
+
+/**
  * The render script of the design: expand `${…}`, queries, templates and
  * transclusions of one page, with `_CTX` set by hand (2.12.1 sets none inside
  * markdown.expandMarkdown) and the writing functions of `space` shadowed for

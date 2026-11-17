@@ -8,6 +8,7 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { sb, T, S, sleep } from "../lib/env.ts";
+import { AWAIT_INDEX } from "../lib/lua.ts";
 import { SHIPPED_ALLOWLIST } from "../../src/filter/allowlist.ts";
 import { NO_PAGE_DATA, OBJECT_FUNCTIONS, ROW_FILTER, ROW_FUNCTIONS, RESTORE_SCRIPT, luaString, navigateScript, renderScript, rowRulesLua } from "../../src/render.ts";
 import { compileAccessList, parseAccessList, rowRules } from "../../src/access.ts";
@@ -18,6 +19,16 @@ const TARGET = "RowCheck/Target";
 const ANCHOR = "sbmcp_rowcheck";
 /** The rules of a reader who may read everything but RowCheck/Hidden. */
 const RULES = { exact: new Map([[HIDDEN, false]]), folders: new Map<string, boolean>(), root: true };
+/** What the index holds of the check's pages: the page rows' modified times and the number of rows of each kind; `complete` when each page and the document has its rows. */
+const INDEX_STATE = `(function()
+  local function count(rows) return #query[[from r = rows where string.startsWith(r.page or r.name or "", "RowCheck/")]] end
+  local mods = {}
+  for _, p in ipairs(query[[from p = index.tag "page" where string.startsWith(p.name, "RowCheck/") select {name = p.name, mod = p.lastModified}]]) do if p.mod ~= nil then mods[#mods + 1] = p.name .. "=" .. tostring(p.mod) end end
+  table.sort(mods)
+  local rel = #query[[from r = index.relations() where r.page == "${HIDDEN}" and r.to == "${TARGET}"]] > 0 and #query[[from r = index.relations() where r.page == "${OPEN}"]] > 0
+  local doc = #query[[from d = index.documents() where d.name == "RowCheck/data.csv"]] > 0
+  return {complete = rel and doc and #mods == 3, pages = mods, links = count(index.links()), items = count(index.items()), tasks = count(index.tasks()), relations = count(index.relations()), tags = count(index.tags()), aspiring = count(index.aspiringPages())}
+end)()`;
 const files = [`${HIDDEN}.md`, `${OPEN}.md`, `${TARGET}.md`, "RowCheck/data.csv"];
 
 const lua = async (script: string) => {
@@ -46,12 +57,26 @@ before(async () => {
   await sb.write(T.admin, S.gamma, `${OPEN}.md`, `* [ ] rowcheck task open\n\nMentions [[${TARGET}]] openly.\n`);
   await sb.write(T.admin, S.gamma, `${TARGET}.md`, `Target.\n\n\${template.each(query[[from t = index.tasks() where string.find(t.name, "rowcheck", 1, true) ~= nil]], templates.taskItem)}\n`);
   await sb.write(T.admin, S.gamma, "RowCheck/data.csv", "a,b\n1,2\n");
-  // Written through the file API: the runtime's client learns about them when it syncs.
-  for (let i = 0; i < 120; i++) {
-    const ready = await lua(`return #query[[from r = index.relations() where r.page == "${HIDDEN}" and r.to == "${TARGET}"]] > 0 and #query[[from r = index.relations() where r.page == "${OPEN}"]] > 0 and #query[[from d = index.documents() where d.name == "RowCheck/data.csv"]] > 0`);
-    if (ready === true) return;
-    await sleep(500);
+  // Written through the file API: the runtime's client learns about them when it syncs, and indexes
+  // a page in steps, more than once when the listing sees its modified time differ from the write's.
+  // A row can be listed before its stored object is there (getObjectByRef answers nil for about a
+  // second), a page row vanishes and returns while the page is indexed again, and a page indexed
+  // before the first one leaves its old rows for a while. So the check starts when the rows of its
+  // pages are there and SilverBullet's own wait for the index says idle, in a state that then
+  // does not change for a few rounds.
+  let last = "";
+  let same = 0;
+  for (let i = 0; i < 120 && same < 3; i++) {
+    const r = await sb.lua(T.alice, S.gamma, `${AWAIT_INDEX}\nreturn ${INDEX_STATE}`, 60);
+    assert.equal(r.status, 200, r.raw);
+    if (r.error) throw new Error(r.error);
+    const state = r.result as { complete: boolean };
+    const now = JSON.stringify(state);
+    same = state.complete && now === last ? same + 1 : 0;
+    last = now;
+    if (same < 3) await sleep(500);
   }
+  if (same >= 3) return;
   assert.fail("the runtime never indexed the RowCheck pages");
 });
 
