@@ -118,6 +118,27 @@ test("review: a move onto an existing page is stale", async () => {
   assert.match(await open("review:P/clash", ".proposals-notice"), /Cannot be applied: a page named T\/B exists already/);
 });
 
+test("review: a move out of a folder to a name that exists only as a path suffix is open and applies", async () => {
+  const text = "In a folder.\n";
+  await writePage("Q/T/p", text);
+  await writeProposal("P/out", { action: "move", target: "Q/T/p", to: "T/p", revision: await revisionOf(text), reason: "" });
+  const notice = await open("review:P/out", ".proposals-notice");
+  assert.doesNotMatch(notice, /Cannot be applied/);
+  await click(".proposals-header", "Apply");
+  await until(async () => (await readPage("T/p")) !== null, 15000);
+  assert.equal(await readPage("Q/T/p"), null);
+  assert.equal(await readPage("T/p"), text);
+});
+
+test("review: a move into a folder applies and reports success", async () => {
+  const text = "Into a folder.\n";
+  await writePage("T/q", text);
+  await writeProposal("P/in", { action: "move", target: "T/q", to: "Q/T/q", revision: await revisionOf(text), reason: "" });
+  assert.deepEqual(await lua(`local ok, why = proposals.apply("P/in", {unbound = true}) return ok and true or why`), true);
+  assert.equal(await readPage("T/q"), null);
+  assert.equal(await readPage("Q/T/q"), text);
+});
+
 test("review: a change to the frontmatter is shown before and after, above the body", async () => {
   const target = "---\nstatus: draft\n---\n# Title\n\nBody.\n";
   await writePage("T/Front", target);

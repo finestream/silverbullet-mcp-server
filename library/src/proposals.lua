@@ -380,6 +380,16 @@ function proposals.proposalOf(page)
 end
 
 -----------------------------------------------------------------------
+-- proposals.exists(name)
+--
+-- True when a page of exactly this name exists. space.pageExists also
+-- resolves a qualified name by path suffix, so "B/p" would find "A/B/p".
+-----------------------------------------------------------------------
+function proposals.exists(name)
+	return space.fileExists(name .. ".md")
+end
+
+-----------------------------------------------------------------------
 -- proposals.evaluate(proposal)
 --
 -- Tests a proposal against its target as it is now.
@@ -407,7 +417,7 @@ function proposals.evaluate(proposal)
 	result.changed = proposals.revisionOf(old) ~= proposal.revision
 	if proposal.action == "edit" then
 		local copy = proposal.name and proposals.workingCopy(proposal.name)
-		if copy and space.pageExists(copy) then
+		if copy and proposals.exists(copy) then
 			result.new = space.readPage(copy)
 			result.edited = true
 			return result
@@ -419,7 +429,7 @@ function proposals.evaluate(proposal)
 		end
 		result.new = new
 	elseif proposal.action == "move" then
-		if space.pageExists(proposal.to) then
+		if proposals.exists(proposal.to) then
 			result.state = "stale"
 			result.why = "a page named " .. proposal.to .. " exists already"
 		end
@@ -708,7 +718,7 @@ end
 function proposals.close(name, group, outcome)
 	if not proposals.inFolder(name) then error("not a page in the proposal folder: " .. tostring(name)) end
 	local copy = proposals.workingCopy(name)
-	if copy and space.pageExists(copy) then space.deletePage(copy) end
+	if copy and proposals.exists(copy) then space.deletePage(copy) end
 	clientStore.delete(proposals.copyKey(name))
 	local revision = nil
 	if proposals.config().deleteClosed then
@@ -743,7 +753,7 @@ function proposals.rename(from, to)
 		return system.invokeFunction("index.renamePageCommand", { oldPage = from, page = to })
 	end)
 	if not ok then return false, "the page could not be renamed: " .. tostring(err) end
-	if space.pageExists(from) or not space.pageExists(to) then
+	if proposals.exists(from) or not proposals.exists(to) then
 		return false, "the page was not renamed"
 	end
 	return true
@@ -928,7 +938,7 @@ function proposals.makeCopy(name, rebuild, expect)
 		target = expect and expect.target, targetRevision = expect and expect.targetRevision
 	}, proposal, old)
 	if differs then return nil, proposals.changedSince(differs) end
-	if space.pageExists(copy) and not rebuild then return copy end
+	if proposals.exists(copy) and not rebuild then return copy end
 	if not old then return nil, "the page " .. proposal.target .. " does not exist" end
 	local new, stale = proposals.applyEdits(old, proposal.edits)
 	if not new then return nil, "stale: " .. stale end
