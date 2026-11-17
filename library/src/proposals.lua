@@ -380,6 +380,32 @@ function proposals.proposalOf(page)
 end
 
 -----------------------------------------------------------------------
+-- proposals.exists(name)
+--
+-- True when a page of exactly this name exists. space.pageExists also
+-- resolves a qualified name by path suffix, so "B/p" would find "A/B/p".
+-----------------------------------------------------------------------
+function proposals.exists(name)
+	return space.fileExists(name .. ".md")
+end
+
+-----------------------------------------------------------------------
+-- proposals.suffixPage(name, except)
+--
+-- The page other than `except` that SilverBullet resolves the name to
+-- by path suffix ("B/p" to "C/B/p"), or nil. A link to the name would
+-- point at it, so the name is not free for a move.
+-----------------------------------------------------------------------
+function proposals.suffixPage(name, except)
+	if not space.pageExists(name) then return nil end
+	local tail = "/" .. name
+	for _, page in ipairs(space.listPages()) do
+		if page.name ~= except and string.sub(page.name, -#tail) == tail then return page.name end
+	end
+	return nil
+end
+
+-----------------------------------------------------------------------
 -- proposals.evaluate(proposal)
 --
 -- Tests a proposal against its target as it is now.
@@ -407,7 +433,7 @@ function proposals.evaluate(proposal)
 	result.changed = proposals.revisionOf(old) ~= proposal.revision
 	if proposal.action == "edit" then
 		local copy = proposal.name and proposals.workingCopy(proposal.name)
-		if copy and space.pageExists(copy) then
+		if copy and proposals.exists(copy) then
 			result.new = space.readPage(copy)
 			result.edited = true
 			return result
@@ -419,9 +445,15 @@ function proposals.evaluate(proposal)
 		end
 		result.new = new
 	elseif proposal.action == "move" then
-		if space.pageExists(proposal.to) then
+		if proposals.exists(proposal.to) then
 			result.state = "stale"
 			result.why = "a page named " .. proposal.to .. " exists already"
+		else
+			local other = proposals.suffixPage(proposal.to, proposal.target)
+			if other then
+				result.state = "stale"
+				result.why = "the name " .. proposal.to .. " would resolve to the page " .. other .. ", and links to it would point at the moved page"
+			end
 		end
 	end
 	return result
@@ -708,7 +740,7 @@ end
 function proposals.close(name, group, outcome)
 	if not proposals.inFolder(name) then error("not a page in the proposal folder: " .. tostring(name)) end
 	local copy = proposals.workingCopy(name)
-	if copy and space.pageExists(copy) then space.deletePage(copy) end
+	if copy and proposals.exists(copy) then space.deletePage(copy) end
 	clientStore.delete(proposals.copyKey(name))
 	local revision = nil
 	if proposals.config().deleteClosed then
@@ -743,7 +775,7 @@ function proposals.rename(from, to)
 		return system.invokeFunction("index.renamePageCommand", { oldPage = from, page = to })
 	end)
 	if not ok then return false, "the page could not be renamed: " .. tostring(err) end
-	if space.pageExists(from) or not space.pageExists(to) then
+	if proposals.exists(from) or not proposals.exists(to) then
 		return false, "the page was not renamed"
 	end
 	return true
@@ -928,7 +960,7 @@ function proposals.makeCopy(name, rebuild, expect)
 		target = expect and expect.target, targetRevision = expect and expect.targetRevision
 	}, proposal, old)
 	if differs then return nil, proposals.changedSince(differs) end
-	if space.pageExists(copy) and not rebuild then return copy end
+	if proposals.exists(copy) and not rebuild then return copy end
 	if not old then return nil, "the page " .. proposal.target .. " does not exist" end
 	local new, stale = proposals.applyEdits(old, proposal.edits)
 	if not new then return nil, "stale: " .. stale end
