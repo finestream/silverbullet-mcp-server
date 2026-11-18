@@ -124,11 +124,14 @@ test("propose-delete and propose-move: the proposal pages carry the action, the 
   assert.match(d.data!.diff, /-Old\./);
   assert.deepEqual(parseProposal((await sb.read(T.admin, SPACE, `Proposals/${dName}.md`)).text), { action: "delete", target: del.page, revision: del.revision, reason: "Replaced." });
 
-  const mov = await target("New.\n");
+  const mov = await target("New.\nSecond line.\n");
   const to = `Notes/${unique("Moved")}`;
   const mName = proposalName("Move new");
   const m = await alice.call("propose-move", { space: SPACE, filename: mov.page, newName: to, expectedRevision: mov.revision, reason: "Ready.", name: mName, group: "g" });
   assert.equal(m.isError, false, m.text);
+  assert.match(m.data!.diff, /\+New\.\n\+Second line\./);
+  assert.equal(m.data!.diffTruncated, false);
+  assert.match(m.text, /moves .* to Notes\/.*\n[\s\S]*\+Second line\./, "the answer carries the page's text");
   assert.deepEqual(parseProposal((await sb.read(T.admin, SPACE, `Proposals/${mName}.md`)).text), { action: "move", target: mov.page, to, revision: mov.revision, reason: "Ready.", group: "g" });
   assert.equal((await sb.read(T.admin, SPACE, `${mov.page}.md`)).status, 200, "the target stays where it is");
 });

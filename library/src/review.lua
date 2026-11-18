@@ -6,8 +6,10 @@
 -- each links to its review, the virtual page review:<name>, with the
 -- diff, the position in the batch and Apply, Edit and Reject; Edit
 -- opens a working copy of the target with the proposal applied, under
--- a bar with Accept, Revert to proposal, Preview and Reject. After
--- Apply, Accept or Reject the review goes on to the next proposal.
+-- a bar with Accept, Revert to proposal, Preview and Reject (for a
+-- move it opens the page itself). The review is also docked at the top
+-- of every proposal page. After Apply, Accept or Reject the review
+-- goes on to the next proposal.
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
@@ -264,8 +266,9 @@ end
 --           and the buttons are Accept, Edit, Revert to proposal,
 --           Reject.
 --   delete  the page and the pages that link to it; Apply, Reject.
---   move    both names and the pages whose links are rewritten; Apply,
---           Reject.
+--   move    both names, the pages whose links are rewritten and the
+--           page, formatted or as text; Apply, Edit (opens the page
+--           itself), Reject.
 --
 -- A proposal that cannot be applied says why and can only be rejected.
 -- Every button is bound to what the view shows (proposals.binding): if
@@ -360,6 +363,11 @@ function proposals.reviewView(name)
 		body.appendChild(line)
 	end
 
+	-- the page as it is, for a delete and a move: formatted or as text
+	local function addPage()
+		addViews(proposals.pageView(result.old), proposals.el("pre", { style = "margin:0;padding:0 0.6em;font-size:0.85em;white-space:pre-wrap;" }, result.old), proposals.holdsHtml(result.old))
+	end
+
 	local function addChange()
 		if proposal.action == "edit" then
 			if result.new then
@@ -369,11 +377,14 @@ function proposals.reviewView(name)
 			body.appendChild(proposals.notice("Deletes the page " .. proposal.target .. ".", c.removedLine))
 			if result.old then
 				addLinking("Pages that link to it:")
-				addViews(proposals.pageView(result.old), proposals.el("pre", { style = "margin:0;padding:0 0.6em;font-size:0.85em;white-space:pre-wrap;" }, result.old), proposals.holdsHtml(result.old))
+				addPage()
 			end
 		else
 			body.appendChild(proposals.notice("Moves the page " .. proposal.target .. " to " .. proposal.to .. ".", c.addedLine))
-			if result.old then addLinking("Pages whose links are rewritten:") end
+			if result.old then
+				addLinking("Pages whose links are rewritten:")
+				addPage()
+			end
 		end
 	end
 
@@ -412,7 +423,10 @@ function proposals.reviewView(name)
 		header.appendChild(proposals.button("Apply", function()
 			proposals.act(name, function() return proposals.apply(name, { changed = true, expect = expect }) end)
 		end))
-		if proposal.action == "edit" then
+		if proposal.action == "move" then
+			-- no working copy: the page itself is edited; the review then warns that it changed
+			header.appendChild(proposals.button("Edit", function() proposals.open(proposal.target) end))
+		elseif proposal.action == "edit" then
 			header.appendChild(proposals.button("Edit", function()
 				local copy, why = proposals.makeCopy(name, false, expect)
 				if copy then
@@ -672,5 +686,24 @@ view.define {
 		local name = proposals.proposalOf(editor.getCurrentPage())
 		if not name then return "" end
 		return widget.new { html = proposals.barView(name), display = "block" }
+	end
+}
+
+-----------------------------------------------------------------------
+-- The review above the proposal pages: a view docked at the top of the
+-- page, which renders nothing on any page outside the proposal folder.
+-----------------------------------------------------------------------
+view.define {
+	name = "proposals.reviewPanel",
+	title = "Review of the proposal",
+	dock = "page-top",
+	supportedDocks = { "page-top" },
+	defaultOpen = true,
+	refreshOn = { "navigate" },
+	refreshOnOpen = true,
+	content = function()
+		local page = editor.getCurrentPage()
+		if not proposals.inFolder(page) then return "" end
+		return widget.new { html = proposals.reviewView(page), display = "block" }
 	end
 }

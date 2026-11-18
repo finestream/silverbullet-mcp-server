@@ -4,7 +4,7 @@
 import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { REVISION } from "../../src/proposal-cases.ts";
-import { clean, click, configure, currentPage, freshRuntime, lua, open, readPage, revisionOf, shown, until, writePage, writeProposal } from "./lib.ts";
+import { clean, click, configure, currentPage, freshRuntime, lua, luaString, open, readPage, revisionOf, shown, sleep, until, writePage, writeProposal } from "./lib.ts";
 
 test.before(async () => {
   await freshRuntime();
@@ -273,4 +273,60 @@ test("review: a %% comment is no HTML: the review opens on the formatted view", 
   const v = await viewState();
   assert.equal(v.formatted, "flex", "the formatted view is shown");
   assert.deepEqual([v.formattedWeight, v.textWeight], ["bold", "normal"]);
+});
+
+const buttons = (selector: string) => lua<string[]>(`local out = {}
+local bs = js.window.document.querySelectorAll(${luaString(selector + " button")})
+for i = 1, bs.length do table.insert(out, bs[i].textContent) end
+return out`);
+
+test("review: a move shows the page's text in both views, also when it cannot be applied", async () => {
+  const text = "# Draft\n\nSome *new* words.\n";
+  await writePage("T/Draft", text);
+  await writeProposal("P/move", { action: "move", target: "T/Draft", to: "T/Placed", revision: await revisionOf(text), reason: "Ready." });
+  await open("review:P/move", ".proposals-formatted");
+  assert.match(await shown(".proposals-formatted"), /Some new words\./);
+  assert.match(await shown(".proposals-review pre"), /Some \*new\* words\./);
+  assert.deepEqual(await buttons(".proposals-header"), ["Formatted", "Text", "Apply", "Edit", "Reject"]);
+
+  await writePage("T/Placed", "in the way\n");
+  await writeProposal("P/stale move", { action: "move", target: "T/Draft", to: "T/Placed", revision: await revisionOf(text), reason: "" });
+  await open("review:P/stale move", ".proposals-formatted");
+  assert.match(await shown(".proposals-notice"), /Cannot be applied: a page named T\/Placed exists already/);
+  assert.match(await shown(".proposals-review pre"), /Some \*new\* words\./);
+  assert.deepEqual(await buttons(".proposals-header"), ["Formatted", "Text", "Reject"]);
+});
+
+test("review: Edit on a move opens the target; after the edit the review warns and Apply still moves it", async () => {
+  const text = "Before.\n";
+  await writePage("T/Draft", text);
+  await writeProposal("P/move", { action: "move", target: "T/Draft", to: "T/Placed", revision: await revisionOf(text), reason: "" });
+  await open("review:P/move", ".proposals-header");
+  await click(".proposals-header", "Edit");
+  assert.ok((await page("T/Draft")).value, `went to ${await currentPage()}`);
+  await writePage("T/Draft", "After the edit.\n");
+  await open("review:P/move", ".proposals-notice");
+  await until(async () => /changed after this proposal/.test(await shown(".proposals-notice")), 10000, 300);
+  assert.match(await shown(".proposals-review pre"), /After the edit\./);
+  assert.equal(await lua(`local ok, why = proposals.apply("P/move", {unbound = true}) return why`), "the page changed after the proposal was written: review it on its own", "Apply all leaves it out");
+  await click(".proposals-header", "Apply");
+  await until(async () => (await readPage("T/Placed")) !== null, 15000);
+  assert.equal(await readPage("T/Placed"), "After the edit.\n");
+  assert.equal(await readPage("T/Draft"), null);
+});
+
+test("review: the proposal page shows the review above it, and no other page does", async () => {
+  const text = "Old.\n";
+  await writePage("T/Gone", text);
+  await writeProposal("P/delete", { action: "delete", target: "T/Gone", revision: await revisionOf(text), reason: "Replaced." });
+  await open("P/delete", ".proposals-review");
+  assert.equal(await shown(".proposals-reason"), "Replaced.");
+  assert.match(await shown(".proposals-review pre"), /Old\./);
+  assert.deepEqual(await buttons(".proposals-header"), ["Formatted", "Text", "Apply", "Reject"]);
+  await click(".proposals-header", "Reject");
+  await until(async () => (await readPage("P/delete")) === null, 10000);
+  assert.equal(await readPage("T/Gone"), text, "Reject leaves the page");
+  await open("T/Gone", ".cm-content");
+  await sleep(1000);
+  assert.equal(await lua<boolean>(`return js.window.document.querySelector(".proposals-review") ~= nil`), false);
 });

@@ -800,7 +800,7 @@ export function registerTools(server: McpServer, ctx: Context) {
     "propose-move",
     {
       title: "Propose move",
-      description: `Propose moving (renaming) a page, which also updates the links to it when applied; this is how a new page written where the user may write gets to its place. Nothing may exist under the new name, and the page must pass the write filter there. ${PROPOSAL_RULES}`,
+      description: `Propose moving (renaming) a page, which also updates the links to it when applied; this is how a new page written where the user may write gets to its place; answered with the page's text as a diff (all added, under the new name). Nothing may exist under the new name, and the page must pass the write filter there. ${PROPOSAL_RULES}`,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       inputSchema: {
         ...proposalArgs,
@@ -825,9 +825,11 @@ export function registerTools(server: McpServer, ctx: Context) {
       );
       if (taken) throw new Refusal("input", `${s}/${pageNameOf(to)} exists already; a move cannot replace a page. ${PROPOSED}`);
       await checkContent(s, to, original.text, PROPOSED);
+      // the page as it will stand under its new name: all of it added
+      const { diff, truncated } = diffOf(to, "", original.text);
       const proposalRevision = await writeProposal(s, proposal, { action: "move", target: page, to: pageNameOf(to), revision, reason: args.reason, group: args.group });
-      const data = { space: s, proposal: pageNameOf(proposal), action: "move", target: page, to: pageNameOf(to), targetRevision: revision, revision: proposalRevision };
-      return result(data, `Proposed: ${s}/${pageNameOf(proposal)} moves ${page} to ${pageNameOf(to)}`);
+      const data = { space: s, proposal: pageNameOf(proposal), action: "move", target: page, to: pageNameOf(to), targetRevision: revision, revision: proposalRevision, diff, diffTruncated: truncated };
+      return result(data, `Proposed: ${s}/${pageNameOf(proposal)} moves ${page} to ${pageNameOf(to)}\n${diff}${truncated ? "\n[Diff truncated]" : ""}`);
     }),
   );
 

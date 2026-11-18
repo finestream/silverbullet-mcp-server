@@ -4,7 +4,7 @@ tags: meta/library
 author: finestream
 description: "Review change proposals made through the SilverBullet MCP server: a list, a diff per proposal, and Apply, Edit and Reject with your own rights."
 pageDecoration.prefix: "📝 "
-version: "0.8.4"
+version: "0.9.0"
 proposalFormat: 1
 ---
 > **note**
@@ -23,11 +23,12 @@ Pages call `proposals.list()` only, so a space that restricts what pages may cal
 * *The list* `${proposals.list()}` shows the open proposals by group (groups that are numbers in numeric order, then the others, then the proposals without a group): target, action and state. *Apply all* applies every listed proposal and *Apply group* those of one group, after one confirmation that names the target pages. A row that could not be read when the list was drawn is never applied this way, only named in the result, even if it can be read by the time you click.
 * *The review* `review:<name of the proposal page>` shows the proposal's reason and its change:
   * an *edit* as a diff of the page as it is against the page with the proposal applied, *Formatted* (the page as it will look; only the changed lines are struck through on red or added on green, a changed table only its changed rows) or as *Text* (the source lines, with the changed words highlighted). When the change touches the frontmatter, the formatted view shows the frontmatter before and after above the body;
-  * a *delete* as the page that goes and the pages that link to it;
-  * a *move* as both names and the pages whose links are rewritten.
+  * a *delete* as the page that goes (*Formatted* or *Text*) and the pages that link to it;
+  * a *move* as both names, the pages whose links are rewritten and the page itself (*Formatted* or *Text*), also when the move cannot be applied.
+* *The review on the proposal page* the proposal page itself shows the same review in a panel docked at its top, with the same *Apply*, *Edit* and *Reject*, so you can review from the page you opened. The panel appears on pages of the proposal folder and nowhere else.
 * *Navigation* *Previous* and *Next* step through the open proposals of the batch, and a counter shows where you are (`5 / 20`). Proposals you already applied or rejected still count, so the numbers do not shift while you work through a batch.
 * *Apply* writes the change with your rights: it reads the proposal and the page again, checks that both are still what the review showed you and that the proposal still fits, and then writes, deletes or renames the page (a rename rewrites the links to it, as *Page: Rename* does).
-* *Edit* opens a *working copy*: the page with the proposal applied, as a page of its own that you edit in the editor. A bar above it offers *Accept* (write the working copy to the page), *Revert to proposal* (build it again), *Preview* (the review, now showing your working copy against the page) and *Reject*. The proposal itself is never rewritten.
+* *Edit* opens a *working copy*: the page with the proposal applied, as a page of its own that you edit in the editor. A bar above it offers *Accept* (write the working copy to the page), *Revert to proposal* (build it again), *Preview* (the review, now showing your working copy against the page) and *Reject*. The proposal itself is never rewritten. On a *move* there is no working copy: *Edit* opens the page itself, so you can correct it before it is moved. The review then says that the page changed after the proposal was written; *Apply* still works, while *Apply all* and *Apply group* leave such a move out.
 * *Going on* after *Apply*, *Accept* or *Reject* the proposal page and its working copy are deleted, and the next open proposal opens: the next of the batch, then of the list. When none is left, the page set as `afterLast` opens.
 
 ## Configuration
@@ -94,7 +95,7 @@ The first lists every open proposal, the second only those for one page (put it 
 -----------------------------------------------------------------------
 proposals = proposals or {}
 
-proposals.version = "0.8.4"
+proposals.version = "0.9.0"
 proposals.format = 1
 proposals.tag = "change-proposal"
 
@@ -1803,8 +1804,10 @@ end
 -- each links to its review, the virtual page review:<name>, with the
 -- diff, the position in the batch and Apply, Edit and Reject; Edit
 -- opens a working copy of the target with the proposal applied, under
--- a bar with Accept, Revert to proposal, Preview and Reject. After
--- Apply, Accept or Reject the review goes on to the next proposal.
+-- a bar with Accept, Revert to proposal, Preview and Reject (for a
+-- move it opens the page itself). The review is also docked at the top
+-- of every proposal page. After Apply, Accept or Reject the review
+-- goes on to the next proposal.
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
@@ -2061,8 +2064,9 @@ end
 --           and the buttons are Accept, Edit, Revert to proposal,
 --           Reject.
 --   delete  the page and the pages that link to it; Apply, Reject.
---   move    both names and the pages whose links are rewritten; Apply,
---           Reject.
+--   move    both names, the pages whose links are rewritten and the
+--           page, formatted or as text; Apply, Edit (opens the page
+--           itself), Reject.
 --
 -- A proposal that cannot be applied says why and can only be rejected.
 -- Every button is bound to what the view shows (proposals.binding): if
@@ -2157,6 +2161,11 @@ function proposals.reviewView(name)
 		body.appendChild(line)
 	end
 
+	-- the page as it is, for a delete and a move: formatted or as text
+	local function addPage()
+		addViews(proposals.pageView(result.old), proposals.el("pre", { style = "margin:0;padding:0 0.6em;font-size:0.85em;white-space:pre-wrap;" }, result.old), proposals.holdsHtml(result.old))
+	end
+
 	local function addChange()
 		if proposal.action == "edit" then
 			if result.new then
@@ -2166,11 +2175,14 @@ function proposals.reviewView(name)
 			body.appendChild(proposals.notice("Deletes the page " .. proposal.target .. ".", c.removedLine))
 			if result.old then
 				addLinking("Pages that link to it:")
-				addViews(proposals.pageView(result.old), proposals.el("pre", { style = "margin:0;padding:0 0.6em;font-size:0.85em;white-space:pre-wrap;" }, result.old), proposals.holdsHtml(result.old))
+				addPage()
 			end
 		else
 			body.appendChild(proposals.notice("Moves the page " .. proposal.target .. " to " .. proposal.to .. ".", c.addedLine))
-			if result.old then addLinking("Pages whose links are rewritten:") end
+			if result.old then
+				addLinking("Pages whose links are rewritten:")
+				addPage()
+			end
 		end
 	end
 
@@ -2209,7 +2221,10 @@ function proposals.reviewView(name)
 		header.appendChild(proposals.button("Apply", function()
 			proposals.act(name, function() return proposals.apply(name, { changed = true, expect = expect }) end)
 		end))
-		if proposal.action == "edit" then
+		if proposal.action == "move" then
+			-- no working copy: the page itself is edited; the review then warns that it changed
+			header.appendChild(proposals.button("Edit", function() proposals.open(proposal.target) end))
+		elseif proposal.action == "edit" then
 			header.appendChild(proposals.button("Edit", function()
 				local copy, why = proposals.makeCopy(name, false, expect)
 				if copy then
@@ -2469,6 +2484,25 @@ view.define {
 		local name = proposals.proposalOf(editor.getCurrentPage())
 		if not name then return "" end
 		return widget.new { html = proposals.barView(name), display = "block" }
+	end
+}
+
+-----------------------------------------------------------------------
+-- The review above the proposal pages: a view docked at the top of the
+-- page, which renders nothing on any page outside the proposal folder.
+-----------------------------------------------------------------------
+view.define {
+	name = "proposals.reviewPanel",
+	title = "Review of the proposal",
+	dock = "page-top",
+	supportedDocks = { "page-top" },
+	defaultOpen = true,
+	refreshOn = { "navigate" },
+	refreshOnOpen = true,
+	content = function()
+		local page = editor.getCurrentPage()
+		if not proposals.inFolder(page) then return "" end
+		return widget.new { html = proposals.reviewView(page), display = "block" }
 	end
 }
 
