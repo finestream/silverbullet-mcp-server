@@ -319,21 +319,29 @@ test("review: Edit on a move opens the target; after the edit the review warns a
   await page("index"); // goOn waits for the index, then navigates: not into the next test
 });
 
-const barOf = (selector: string) => lua<string>(`local e = js.window.document.querySelector(${luaString(selector)}) return e and e.style.borderLeftColor or ""`);
-
 test("review: the page of a move is drawn behind the bar of an added page, that of a delete behind the red one", async () => {
-  const text = "---\nstatus: draft\n---\nBody.\n";
-  await writePage("T/Draft", text);
-  await writeProposal("P/move", { action: "move", target: "T/Draft", to: "T/Elsewhere", revision: await revisionOf(text), reason: "" });
-  await writeProposal("P/delete", { action: "delete", target: "T/Draft", revision: await revisionOf(text), reason: "" });
-  await open("review:P/move", ".proposals-notice");
-  await showing(".proposals-notice", /Moves the page/);
-  const added = await barOf(".proposals-formatted pre");
-  await open("review:P/delete", ".proposals-notice");
-  await showing(".proposals-notice", /Deletes the page/);
-  const removed = await barOf(".proposals-formatted pre");
-  assert.match(added, /^rgb\(26, 127, 55\)$/);
-  assert.match(removed, /^rgb\(207, 34, 46\)$/);
+  const withFront = "---\nstatus: draft\n---\nBody.\n";
+  await writePage("T/Draft", withFront);
+  await writePage("T/Plain", "Only a body.\n");
+  const R = await revisionOf(withFront);
+  await writeProposal("P/move", { action: "move", target: "T/Draft", to: "T/Elsewhere", revision: R, reason: "" });
+  await writeProposal("P/plain move", { action: "move", target: "T/Plain", to: "T/Elsewhere 2", revision: await revisionOf("Only a body.\n"), reason: "" });
+  await writeProposal("P/delete", { action: "delete", target: "T/Draft", revision: R, reason: "" });
+  await writeProposal("P/plain delete", { action: "delete", target: "T/Plain", revision: await revisionOf("Only a body.\n"), reason: "" });
+  // the colours of the bars of the frontmatter block and of the body block, in the formatted view
+  const bars = (name: string, notice: RegExp) =>
+    open(`review:${name}`, ".proposals-notice")
+      .then(() => showing(".proposals-notice", notice))
+      .then(() => lua<string[]>(`local out = {}
+local box = js.window.document.querySelector(".proposals-formatted")
+for i = 1, box.children.length do table.insert(out, box.children[i].style.borderLeftColor) end
+return out`));
+  const green = "rgb(26, 127, 55)";
+  const red = "rgb(207, 34, 46)";
+  assert.deepEqual(await bars("P/move", /Moves the page/), [green, green], "move, frontmatter and body");
+  assert.deepEqual(await bars("P/plain move", /Moves the page T\/Plain/), [green], "move, body only");
+  assert.deepEqual(await bars("P/delete", /Deletes the page T\/Draft/), [red, red], "delete, frontmatter and body");
+  assert.deepEqual(await bars("P/plain delete", /Deletes the page T\/Plain/), [red], "delete, body only");
 });
 
 test("review: the proposal page shows the review above it, and no other page does", async () => {
@@ -343,7 +351,7 @@ test("review: the proposal page shows the review above it, and no other page doe
   await writeProposal("P/delete", { action: "delete", target: "T/Gone", revision: await revisionOf(text), reason: "Replaced." });
   await configure({ afterLast: "T/Done" });
   await open("P/delete", ".proposals-review");
-  assert.equal(await shown(".proposals-reason"), "Replaced.");
+  await showing(".proposals-reason", /^Replaced\.$/); // not the review an earlier test left in the document
   assert.match(await shown(".proposals-review pre"), /Old\./);
   assert.deepEqual(await buttons(".proposals-header"), ["Formatted", "Text", "Apply", "Reject"]);
   await click(".proposals-header", "Reject");

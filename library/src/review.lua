@@ -369,8 +369,8 @@ function proposals.reviewView(name)
 	end
 
 	-- the page as it is, for a delete and a move: formatted or as text
-	local function addPage(bar)
-		addViews(proposals.pageView(result.old, bar), proposals.el("pre", { style = "margin:0;padding:0 0.6em;font-size:0.85em;white-space:pre-wrap;" }, result.old), proposals.holdsHtml(result.old))
+	local function addPage(added)
+		addViews(proposals.pageView(result.old, added), proposals.el("pre", { style = "margin:0;padding:0 0.6em;font-size:0.85em;white-space:pre-wrap;" }, result.old), proposals.holdsHtml(result.old))
 	end
 
 	local function addChange()
@@ -388,7 +388,7 @@ function proposals.reviewView(name)
 			body.appendChild(proposals.notice("Moves the page " .. proposal.target .. " to " .. proposal.to .. ".", c.addedLine))
 			if result.old then
 				addLinking("Pages whose links are rewritten:")
-				addPage(c.addedBar)
+				addPage(true)
 			end
 		end
 	end

@@ -1786,19 +1786,19 @@ function proposals.formattedDiff(old, new)
 end
 
 -----------------------------------------------------------------------
--- proposals.pageView(text, bar)
+-- proposals.pageView(text, added)
 --
 -- A page as it is, formatted: its frontmatter as text, its body
--- rendered, behind a bar of `bar` (default: the red of a page that is to
--- be deleted; a move passes the colour of an added page).
+-- rendered, behind the red bar of a page that is to be deleted or, with
+-- `added`, the green of a page that is added (the page of a move).
 -----------------------------------------------------------------------
-function proposals.pageView(text, bar)
+function proposals.pageView(text, added)
 	local container = dom.div { class = "proposals-formatted", style = "display:flex;flex-direction:column;gap:0.3em;" }
 	local frontmatter, body = proposals.splitFrontmatter(text)
 	if frontmatter ~= "" then
-		container.appendChild(proposals.el("pre", { style = "margin:0 0.6em;padding:0.3em 0.6em;font-size:0.85em;white-space:pre-wrap;border-left:3px solid " .. (bar or proposals.colours.removedBar) .. ";" }, frontmatter))
+		container.appendChild(proposals.el("pre", { style = "margin:0 0.6em;padding:0.3em 0.6em;font-size:0.85em;white-space:pre-wrap;border-left:3px solid " .. (added and proposals.colours.addedBar or proposals.colours.removedBar) .. ";" }, frontmatter))
 	end
-	container.appendChild(proposals.rendered(body, "x"))
+	container.appendChild(proposals.rendered(body, added and "+" or "x"))
 	return container
 end
 
@@ -2172,8 +2172,8 @@ function proposals.reviewView(name)
 	end
 
 	-- the page as it is, for a delete and a move: formatted or as text
-	local function addPage(bar)
-		addViews(proposals.pageView(result.old, bar), proposals.el("pre", { style = "margin:0;padding:0 0.6em;font-size:0.85em;white-space:pre-wrap;" }, result.old), proposals.holdsHtml(result.old))
+	local function addPage(added)
+		addViews(proposals.pageView(result.old, added), proposals.el("pre", { style = "margin:0;padding:0 0.6em;font-size:0.85em;white-space:pre-wrap;" }, result.old), proposals.holdsHtml(result.old))
 	end
 
 	local function addChange()
@@ -2191,7 +2191,7 @@ function proposals.reviewView(name)
 			body.appendChild(proposals.notice("Moves the page " .. proposal.target .. " to " .. proposal.to .. ".", c.addedLine))
 			if result.old then
 				addLinking("Pages whose links are rewritten:")
-				addPage(c.addedBar)
+				addPage(true)
 			end
 		end
 	end
