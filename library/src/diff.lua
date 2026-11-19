@@ -687,16 +687,17 @@ function proposals.formattedDiff(old, new)
 end
 
 -----------------------------------------------------------------------
--- proposals.pageView(text)
+-- proposals.pageView(text, bar)
 --
--- A page that is to be deleted, formatted: its frontmatter as text,
--- its body rendered, behind a red bar.
+-- A page as it is, formatted: its frontmatter as text, its body
+-- rendered, behind a bar of `bar` (default: the red of a page that is to
+-- be deleted; a move passes the colour of an added page).
 -----------------------------------------------------------------------
-function proposals.pageView(text)
+function proposals.pageView(text, bar)
 	local container = dom.div { class = "proposals-formatted", style = "display:flex;flex-direction:column;gap:0.3em;" }
 	local frontmatter, body = proposals.splitFrontmatter(text)
 	if frontmatter ~= "" then
-		container.appendChild(proposals.el("pre", { style = "margin:0 0.6em;padding:0.3em 0.6em;font-size:0.85em;white-space:pre-wrap;border-left:3px solid " .. proposals.colours.removedBar .. ";" }, frontmatter))
+		container.appendChild(proposals.el("pre", { style = "margin:0 0.6em;padding:0.3em 0.6em;font-size:0.85em;white-space:pre-wrap;border-left:3px solid " .. (bar or proposals.colours.removedBar) .. ";" }, frontmatter))
 	end
 	container.appendChild(proposals.rendered(body, "x"))
 	return container

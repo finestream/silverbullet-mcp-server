@@ -88,14 +88,19 @@ function proposals.button(label, action, enabled)
 	return proposals.el("button", attributes, label)
 end
 
+-- the event the docked views list in refreshOn, besides navigation
+proposals.refreshEvent = "proposals:refresh"
+
 -----------------------------------------------------------------------
 -- proposals.refresh()
 --
--- Re-renders the widgets of the page shown, after an action changed
--- what they display.
+-- Re-renders the widgets of the page shown and the docked views (the
+-- bar of a working copy, the review of a proposal page), after an
+-- action changed what they display.
 -----------------------------------------------------------------------
 function proposals.refresh()
 	if codeWidget and codeWidget.refreshAll then codeWidget.refreshAll() end
+	event.dispatch(proposals.refreshEvent, {})
 end
 
 -----------------------------------------------------------------------
@@ -364,8 +369,8 @@ function proposals.reviewView(name)
 	end
 
 	-- the page as it is, for a delete and a move: formatted or as text
-	local function addPage()
-		addViews(proposals.pageView(result.old), proposals.el("pre", { style = "margin:0;padding:0 0.6em;font-size:0.85em;white-space:pre-wrap;" }, result.old), proposals.holdsHtml(result.old))
+	local function addPage(bar)
+		addViews(proposals.pageView(result.old, bar), proposals.el("pre", { style = "margin:0;padding:0 0.6em;font-size:0.85em;white-space:pre-wrap;" }, result.old), proposals.holdsHtml(result.old))
 	end
 
 	local function addChange()
@@ -383,7 +388,7 @@ function proposals.reviewView(name)
 			body.appendChild(proposals.notice("Moves the page " .. proposal.target .. " to " .. proposal.to .. ".", c.addedLine))
 			if result.old then
 				addLinking("Pages whose links are rewritten:")
-				addPage()
+				addPage(c.addedBar)
 			end
 		end
 	end
@@ -670,40 +675,37 @@ function proposals.barView(name)
 end
 
 -----------------------------------------------------------------------
--- The bar above the working copies: a view docked at the top of the
--- page, which renders nothing on any page outside the folder of the
--- working copies.
+-- proposals.dock(name, title, show)
+--
+-- Defines a view docked at the top of the page that renders nothing
+-- unless `show(page)` returns a DOM node for the page shown. It is
+-- drawn again on navigation and by proposals.refresh.
 -----------------------------------------------------------------------
-view.define {
-	name = "proposals.workingCopy",
-	title = "Change proposal",
-	dock = "page-top",
-	supportedDocks = { "page-top" },
-	defaultOpen = true,
-	refreshOn = { "navigate" },
-	refreshOnOpen = true,
-	content = function()
-		local name = proposals.proposalOf(editor.getCurrentPage())
-		if not name then return "" end
-		return widget.new { html = proposals.barView(name), display = "block" }
-	end
-}
+function proposals.dock(name, title, show)
+	view.define {
+		name = name,
+		title = title,
+		dock = "page-top",
+		supportedDocks = { "page-top" },
+		defaultOpen = true,
+		refreshOn = { "navigate", proposals.refreshEvent },
+		refreshOnOpen = true,
+		content = function()
+			local node = show(editor.getCurrentPage())
+			if not node then return "" end
+			return widget.new { html = node, display = "block" }
+		end
+	}
+end
 
------------------------------------------------------------------------
--- The review above the proposal pages: a view docked at the top of the
--- page, which renders nothing on any page outside the proposal folder.
------------------------------------------------------------------------
-view.define {
-	name = "proposals.reviewPanel",
-	title = "Review of the proposal",
-	dock = "page-top",
-	supportedDocks = { "page-top" },
-	defaultOpen = true,
-	refreshOn = { "navigate" },
-	refreshOnOpen = true,
-	content = function()
-		local page = editor.getCurrentPage()
-		if not proposals.inFolder(page) then return "" end
-		return widget.new { html = proposals.reviewView(page), display = "block" }
-	end
-}
+-- the bar above the working copies; nothing on any page outside their folder
+proposals.dock("proposals.workingCopy", "Change proposal", function(page)
+	local name = proposals.proposalOf(page)
+	return name and proposals.barView(name)
+end)
+
+-- the review above a proposal page; nothing on a page that is no proposal
+proposals.dock("proposals.reviewPanel", "Review of the proposal", function(page)
+	if not proposals.read(page) then return nil end
+	return proposals.reviewView(page)
+end)

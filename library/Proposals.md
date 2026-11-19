@@ -25,7 +25,7 @@ Pages call `proposals.list()` only, so a space that restricts what pages may cal
   * an *edit* as a diff of the page as it is against the page with the proposal applied, *Formatted* (the page as it will look; only the changed lines are struck through on red or added on green, a changed table only its changed rows) or as *Text* (the source lines, with the changed words highlighted). When the change touches the frontmatter, the formatted view shows the frontmatter before and after above the body;
   * a *delete* as the page that goes (*Formatted* or *Text*) and the pages that link to it;
   * a *move* as both names, the pages whose links are rewritten and the page itself (*Formatted* or *Text*), also when the move cannot be applied.
-* *The review on the proposal page* the proposal page itself shows the same review in a panel docked at its top, with the same *Apply*, *Edit* and *Reject*, so you can review from the page you opened. The panel appears on pages of the proposal folder and nowhere else.
+* *The review on the proposal page* the proposal page itself shows the same review in a panel docked at its top, with the same *Apply*, *Edit* and *Reject*, so you can review from the page you opened. The panel appears on proposal pages (pages of the proposal folder that can be read as a proposal) and nowhere else. Acting from it on the page that is open leaves that page first, so the editor cannot write it back.
 * *Navigation* *Previous* and *Next* step through the open proposals of the batch, and a counter shows where you are (`5 / 20`). Proposals you already applied or rejected still count, so the numbers do not shift while you work through a batch.
 * *Apply* writes the change with your rights: it reads the proposal and the page again, checks that both are still what the review showed you and that the proposal still fits, and then writes, deletes or renames the page (a rename rewrites the links to it, as *Page: Rename* does).
 * *Edit* opens a *working copy*: the page with the proposal applied, as a page of its own that you edit in the editor. A bar above it offers *Accept* (write the working copy to the page), *Revert to proposal* (build it again), *Preview* (the review, now showing your working copy against the page) and *Reject*. The proposal itself is never rewritten. On a *move* there is no working copy: *Edit* opens the page itself, so you can correct it before it is moved. The review then says that the page changed after the proposal was written; *Apply* still works, while *Apply all* and *Apply group* leave such a move out.
@@ -817,6 +817,10 @@ end
 -----------------------------------------------------------------------
 function proposals.close(name, group, outcome)
 	if not proposals.inFolder(name) then error("not a page in the proposal folder: " .. tostring(name)) end
+	-- the proposal page may be open in the editor (its review panel): the
+	-- editor writes its buffer back after the page is deleted or rewritten,
+	-- so it leaves the page first, which saves the buffer
+	if editor.getCurrentPage() == name then proposals.open(proposals.config().afterLast) end
 	local copy = proposals.workingCopy(name)
 	if copy and proposals.exists(copy) then space.deletePage(copy) end
 	clientStore.delete(proposals.copyKey(name))
@@ -1782,16 +1786,17 @@ function proposals.formattedDiff(old, new)
 end
 
 -----------------------------------------------------------------------
--- proposals.pageView(text)
+-- proposals.pageView(text, bar)
 --
--- A page that is to be deleted, formatted: its frontmatter as text,
--- its body rendered, behind a red bar.
+-- A page as it is, formatted: its frontmatter as text, its body
+-- rendered, behind a bar of `bar` (default: the red of a page that is to
+-- be deleted; a move passes the colour of an added page).
 -----------------------------------------------------------------------
-function proposals.pageView(text)
+function proposals.pageView(text, bar)
 	local container = dom.div { class = "proposals-formatted", style = "display:flex;flex-direction:column;gap:0.3em;" }
 	local frontmatter, body = proposals.splitFrontmatter(text)
 	if frontmatter ~= "" then
-		container.appendChild(proposals.el("pre", { style = "margin:0 0.6em;padding:0.3em 0.6em;font-size:0.85em;white-space:pre-wrap;border-left:3px solid " .. proposals.colours.removedBar .. ";" }, frontmatter))
+		container.appendChild(proposals.el("pre", { style = "margin:0 0.6em;padding:0.3em 0.6em;font-size:0.85em;white-space:pre-wrap;border-left:3px solid " .. (bar or proposals.colours.removedBar) .. ";" }, frontmatter))
 	end
 	container.appendChild(proposals.rendered(body, "x"))
 	return container
@@ -1886,14 +1891,19 @@ function proposals.button(label, action, enabled)
 	return proposals.el("button", attributes, label)
 end
 
+-- the event the docked views list in refreshOn, besides navigation
+proposals.refreshEvent = "proposals:refresh"
+
 -----------------------------------------------------------------------
 -- proposals.refresh()
 --
--- Re-renders the widgets of the page shown, after an action changed
--- what they display.
+-- Re-renders the widgets of the page shown and the docked views (the
+-- bar of a working copy, the review of a proposal page), after an
+-- action changed what they display.
 -----------------------------------------------------------------------
 function proposals.refresh()
 	if codeWidget and codeWidget.refreshAll then codeWidget.refreshAll() end
+	event.dispatch(proposals.refreshEvent, {})
 end
 
 -----------------------------------------------------------------------
@@ -2162,8 +2172,8 @@ function proposals.reviewView(name)
 	end
 
 	-- the page as it is, for a delete and a move: formatted or as text
-	local function addPage()
-		addViews(proposals.pageView(result.old), proposals.el("pre", { style = "margin:0;padding:0 0.6em;font-size:0.85em;white-space:pre-wrap;" }, result.old), proposals.holdsHtml(result.old))
+	local function addPage(bar)
+		addViews(proposals.pageView(result.old, bar), proposals.el("pre", { style = "margin:0;padding:0 0.6em;font-size:0.85em;white-space:pre-wrap;" }, result.old), proposals.holdsHtml(result.old))
 	end
 
 	local function addChange()
@@ -2181,7 +2191,7 @@ function proposals.reviewView(name)
 			body.appendChild(proposals.notice("Moves the page " .. proposal.target .. " to " .. proposal.to .. ".", c.addedLine))
 			if result.old then
 				addLinking("Pages whose links are rewritten:")
-				addPage()
+				addPage(c.addedBar)
 			end
 		end
 	end
@@ -2468,43 +2478,40 @@ function proposals.barView(name)
 end
 
 -----------------------------------------------------------------------
--- The bar above the working copies: a view docked at the top of the
--- page, which renders nothing on any page outside the folder of the
--- working copies.
+-- proposals.dock(name, title, show)
+--
+-- Defines a view docked at the top of the page that renders nothing
+-- unless `show(page)` returns a DOM node for the page shown. It is
+-- drawn again on navigation and by proposals.refresh.
 -----------------------------------------------------------------------
-view.define {
-	name = "proposals.workingCopy",
-	title = "Change proposal",
-	dock = "page-top",
-	supportedDocks = { "page-top" },
-	defaultOpen = true,
-	refreshOn = { "navigate" },
-	refreshOnOpen = true,
-	content = function()
-		local name = proposals.proposalOf(editor.getCurrentPage())
-		if not name then return "" end
-		return widget.new { html = proposals.barView(name), display = "block" }
-	end
-}
+function proposals.dock(name, title, show)
+	view.define {
+		name = name,
+		title = title,
+		dock = "page-top",
+		supportedDocks = { "page-top" },
+		defaultOpen = true,
+		refreshOn = { "navigate", proposals.refreshEvent },
+		refreshOnOpen = true,
+		content = function()
+			local node = show(editor.getCurrentPage())
+			if not node then return "" end
+			return widget.new { html = node, display = "block" }
+		end
+	}
+end
 
------------------------------------------------------------------------
--- The review above the proposal pages: a view docked at the top of the
--- page, which renders nothing on any page outside the proposal folder.
------------------------------------------------------------------------
-view.define {
-	name = "proposals.reviewPanel",
-	title = "Review of the proposal",
-	dock = "page-top",
-	supportedDocks = { "page-top" },
-	defaultOpen = true,
-	refreshOn = { "navigate" },
-	refreshOnOpen = true,
-	content = function()
-		local page = editor.getCurrentPage()
-		if not proposals.inFolder(page) then return "" end
-		return widget.new { html = proposals.reviewView(page), display = "block" }
-	end
-}
+-- the bar above the working copies; nothing on any page outside their folder
+proposals.dock("proposals.workingCopy", "Change proposal", function(page)
+	local name = proposals.proposalOf(page)
+	return name and proposals.barView(name)
+end)
+
+-- the review above a proposal page; nothing on a page that is no proposal
+proposals.dock("proposals.reviewPanel", "Review of the proposal", function(page)
+	if not proposals.read(page) then return nil end
+	return proposals.reviewView(page)
+end)
 
 -----------------------------------------------------------------------
 -- proposals.jsdiffSource
