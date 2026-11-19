@@ -4,11 +4,13 @@
 // src/proposal.ts, as the server's tools will write them.
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { sb, T, S, sleep, until } from "../lib/env.ts";
 import { luaString } from "../lib/lua.ts";
 import { formatProposal, type Proposal } from "../../src/proposal.ts";
 import { buildLibrary, LIBRARY_PAGE } from "../../scripts/build-library.ts";
+import { current } from "../instance.ts";
 
 export { luaString, sleep, until };
 
@@ -86,28 +88,66 @@ export async function writeProposal(name: string, proposal: Proposal) {
  */
 const PENDING = `if index.awaitPendingChanges then index.awaitPendingChanges() else space.listFiles() mq.awaitEmptyQueue("indexQueue") end`;
 
-/** Runs `script` after SilverBullet's listing until `done` holds for its result or `timeoutMs` has passed; returns whether it held and the last result. */
-async function afterListing<V>(script: string, done: (value: V) => boolean, timeoutMs: number): Promise<{ held: boolean; value: V }> {
+/** One attempt of a wait, kept for the diagnostic of a wait that fails: when it started and how long the listing and the check took. */
+type Attempt = { at: number; ms: number };
+
+/** Runs `script` after SilverBullet's listing until `done` holds for its result or `timeoutMs` has passed; returns whether it held, the last result and every attempt. */
+async function afterListing<V>(script: string, done: (value: V) => boolean, timeoutMs: number): Promise<{ held: boolean; value: V; attempts: Attempt[] }> {
   const t0 = Date.now();
+  const attempts: Attempt[] = [];
   for (;;) {
+    const at = Date.now() - t0;
     const value = await lua<V>(`${PENDING}\n${script}`, 10);
-    if (done(value)) return { held: true, value };
-    if (Date.now() - t0 >= timeoutMs) return { held: false, value };
+    const ms = Date.now() - t0 - at;
+    if (done(value)) return { held: true, value, attempts };
+    attempts.push({ at, ms });
+    if (Date.now() - t0 >= timeoutMs) return { held: false, value, attempts };
     await sleep(300);
   }
 }
 
-/** What the index lists of the proposal pages, and whether the files of `names` exist, as one line for a diagnostic. */
-async function indexState(names: string[]): Promise<string> {
+/** The index queue's counts as one string; never throws, since it only serves a diagnostic. */
+async function queueStats(): Promise<string> {
+  try {
+    return JSON.stringify(await lua(`return mq.getQueueStats("indexQueue")`, 5));
+  } catch (e) {
+    return `unknown (${e instanceof Error ? e.message.split("\n")[0] : e})`;
+  }
+}
+
+/** The last lines of the SilverBullet container's log, or why there are none. */
+function containerLog(lines = 30): string {
+  const container = process.env.SB_CONTAINER ?? current().container;
+  try {
+    return execFileSync("docker", ["logs", "--tail", String(lines), container], { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" }).trimEnd();
+  } catch (e) {
+    return `no log from container ${container}: ${e instanceof Error ? e.message.split("\n")[0] : e}`;
+  }
+}
+
+/**
+ * What the index lists of the proposal pages, whether the files of `names`
+ * exist and what SilverBullet's listing returns for them, the index queue, the
+ * attempts of the wait and the end of the container's log, for a wait that failed.
+ */
+async function indexState(names: string[], attempts: Attempt[] = []): Promise<string> {
   const listed = await lua<string[]>(`local out = {} for _, p in ipairs(query[[from p = index.tag "change-proposal" where p.tag == "page" select p.name]]) do table.insert(out, p) end return out`);
   const files = await Promise.all(names.map(async (n) => `${n}: ${(await readPage(n)) === null ? "no file" : "file exists"}`));
-  return `the index lists ${JSON.stringify(listed)}; ${files.join(", ")}`;
+  const listing = await lua<unknown>(`local want, out = {${names.map((n) => luaString(`${n}.md`)).join(",")}}, {}
+for _, f in ipairs(space.listFiles()) do for _, n in ipairs(want) do if f.name == n then table.insert(out, f) end end end
+return out`, 10).catch((e) => `the listing failed: ${e instanceof Error ? e.message.split("\n")[0] : e}`);
+  const tries = attempts.map((a) => `+${a.at}ms, took ${a.ms}ms`).join("\n  ");
+  return `the index lists ${JSON.stringify(listed)}; ${files.join(", ")}
+SilverBullet's listing of ${names.join(", ")}: ${JSON.stringify(listing)}
+index queue now: ${await queueStats()}
+${attempts.length} attempts (start, duration):\n  ${tries}
+container log (tail):\n${containerLog()}`;
 }
 
 /** Waits until the index knows every one of these proposal pages; fails, saying what the index holds. */
 export async function indexed(names: string[], timeoutMs = 20000) {
   const list = `{${names.map((n) => luaString(n)).join(",")}}`;
-  const { held } = await afterListing<boolean>(
+  const { held, attempts } = await afterListing<boolean>(
     `local want = ${list}
 local have = {}
 for _, p in ipairs(query[[from p = index.tag "change-proposal" where p.tag == "page" select p.name]]) do have[p] = true end
@@ -116,7 +156,7 @@ return true`,
     (v) => v === true,
     timeoutMs,
   );
-  if (!held) assert.fail(`the index does not list ${names.join(", ")} (${await indexState(names)})`);
+  if (!held) assert.fail(`the index does not list ${names.join(", ")} (${await indexState(names, attempts)})`);
 }
 
 /**
@@ -127,12 +167,12 @@ return true`,
 export async function listed(name: string, first = false, timeoutMs = 20000) {
   // An empty Lua table comes back as {}, not []
   const names = (v: unknown) => Object.values((v ?? {}) as Record<string, string>);
-  const { held, value } = await afterListing<unknown>(
+  const { held, value, attempts } = await afterListing<unknown>(
     `local out = {} for _, e in ipairs(proposals.entries()) do table.insert(out, e.name) end return out`,
     (v) => (first ? names(v)[0] === name : names(v).includes(name)),
     timeoutMs,
   );
-  if (!held) assert.fail(`${name} is not ${first ? "the first" : "one"} of the open proposals: the list holds ${JSON.stringify(names(value))}; ${await indexState([name])}`);
+  if (!held) assert.fail(`${name} is not ${first ? "the first" : "one"} of the open proposals: the list holds ${JSON.stringify(names(value))}; ${await indexState([name], attempts)}`);
 }
 
 /** Forgets what this client remembers of a group's batch and of closed proposals. */
