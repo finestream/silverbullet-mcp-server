@@ -739,6 +739,10 @@ end
 -----------------------------------------------------------------------
 function proposals.close(name, group, outcome)
 	if not proposals.inFolder(name) then error("not a page in the proposal folder: " .. tostring(name)) end
+	-- the proposal page may be open in the editor (its review panel): the
+	-- editor writes its buffer back after the page is deleted or rewritten,
+	-- so it leaves the page first, which saves the buffer
+	if editor.getCurrentPage() == name then proposals.open(proposals.config().afterLast) end
 	local copy = proposals.workingCopy(name)
 	if copy and proposals.exists(copy) then space.deletePage(copy) end
 	clientStore.delete(proposals.copyKey(name))

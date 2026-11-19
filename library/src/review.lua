@@ -6,8 +6,10 @@
 -- each links to its review, the virtual page review:<name>, with the
 -- diff, the position in the batch and Apply, Edit and Reject; Edit
 -- opens a working copy of the target with the proposal applied, under
--- a bar with Accept, Revert to proposal, Preview and Reject. After
--- Apply, Accept or Reject the review goes on to the next proposal.
+-- a bar with Accept, Revert to proposal, Preview and Reject (for a
+-- move it opens the page itself). The review is also docked at the top
+-- of every proposal page. After Apply, Accept or Reject the review
+-- goes on to the next proposal.
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
@@ -86,14 +88,19 @@ function proposals.button(label, action, enabled)
 	return proposals.el("button", attributes, label)
 end
 
+-- the event the docked views list in refreshOn, besides navigation
+proposals.refreshEvent = "proposals:refresh"
+
 -----------------------------------------------------------------------
 -- proposals.refresh()
 --
--- Re-renders the widgets of the page shown, after an action changed
--- what they display.
+-- Re-renders the widgets of the page shown and the docked views (the
+-- bar of a working copy, the review of a proposal page), after an
+-- action changed what they display.
 -----------------------------------------------------------------------
 function proposals.refresh()
 	if codeWidget and codeWidget.refreshAll then codeWidget.refreshAll() end
+	event.dispatch(proposals.refreshEvent, {})
 end
 
 -----------------------------------------------------------------------
@@ -264,8 +271,9 @@ end
 --           and the buttons are Accept, Edit, Revert to proposal,
 --           Reject.
 --   delete  the page and the pages that link to it; Apply, Reject.
---   move    both names and the pages whose links are rewritten; Apply,
---           Reject.
+--   move    both names, the pages whose links are rewritten and the
+--           page, formatted or as text; Apply, Edit (opens the page
+--           itself), Reject.
 --
 -- A proposal that cannot be applied says why and can only be rejected.
 -- Every button is bound to what the view shows (proposals.binding): if
@@ -360,6 +368,11 @@ function proposals.reviewView(name)
 		body.appendChild(line)
 	end
 
+	-- the page as it is, for a delete and a move: formatted or as text
+	local function addPage(added)
+		addViews(proposals.pageView(result.old, added), proposals.el("pre", { style = "margin:0;padding:0 0.6em;font-size:0.85em;white-space:pre-wrap;" }, result.old), proposals.holdsHtml(result.old))
+	end
+
 	local function addChange()
 		if proposal.action == "edit" then
 			if result.new then
@@ -369,11 +382,14 @@ function proposals.reviewView(name)
 			body.appendChild(proposals.notice("Deletes the page " .. proposal.target .. ".", c.removedLine))
 			if result.old then
 				addLinking("Pages that link to it:")
-				addViews(proposals.pageView(result.old), proposals.el("pre", { style = "margin:0;padding:0 0.6em;font-size:0.85em;white-space:pre-wrap;" }, result.old), proposals.holdsHtml(result.old))
+				addPage()
 			end
 		else
 			body.appendChild(proposals.notice("Moves the page " .. proposal.target .. " to " .. proposal.to .. ".", c.addedLine))
-			if result.old then addLinking("Pages whose links are rewritten:") end
+			if result.old then
+				addLinking("Pages whose links are rewritten:")
+				addPage(true)
+			end
 		end
 	end
 
@@ -412,7 +428,10 @@ function proposals.reviewView(name)
 		header.appendChild(proposals.button("Apply", function()
 			proposals.act(name, function() return proposals.apply(name, { changed = true, expect = expect }) end)
 		end))
-		if proposal.action == "edit" then
+		if proposal.action == "move" then
+			-- no working copy: the page itself is edited; the review then warns that it changed
+			header.appendChild(proposals.button("Edit", function() proposals.open(proposal.target) end))
+		elseif proposal.action == "edit" then
 			header.appendChild(proposals.button("Edit", function()
 				local copy, why = proposals.makeCopy(name, false, expect)
 				if copy then
@@ -656,21 +675,37 @@ function proposals.barView(name)
 end
 
 -----------------------------------------------------------------------
--- The bar above the working copies: a view docked at the top of the
--- page, which renders nothing on any page outside the folder of the
--- working copies.
+-- proposals.dock(name, title, show)
+--
+-- Defines a view docked at the top of the page that renders nothing
+-- unless `show(page)` returns a DOM node for the page shown. It is
+-- drawn again on navigation and by proposals.refresh.
 -----------------------------------------------------------------------
-view.define {
-	name = "proposals.workingCopy",
-	title = "Change proposal",
-	dock = "page-top",
-	supportedDocks = { "page-top" },
-	defaultOpen = true,
-	refreshOn = { "navigate" },
-	refreshOnOpen = true,
-	content = function()
-		local name = proposals.proposalOf(editor.getCurrentPage())
-		if not name then return "" end
-		return widget.new { html = proposals.barView(name), display = "block" }
-	end
-}
+function proposals.dock(name, title, show)
+	view.define {
+		name = name,
+		title = title,
+		dock = "page-top",
+		supportedDocks = { "page-top" },
+		defaultOpen = true,
+		refreshOn = { "navigate", proposals.refreshEvent },
+		refreshOnOpen = true,
+		content = function()
+			local node = show(editor.getCurrentPage())
+			if not node then return "" end
+			return widget.new { html = node, display = "block" }
+		end
+	}
+end
+
+-- the bar above the working copies; nothing on any page outside their folder
+proposals.dock("proposals.workingCopy", "Change proposal", function(page)
+	local name = proposals.proposalOf(page)
+	return name and proposals.barView(name)
+end)
+
+-- the review above a proposal page; nothing on a page that is no proposal
+proposals.dock("proposals.reviewPanel", "Review of the proposal", function(page)
+	if not proposals.read(page) then return nil end
+	return proposals.reviewView(page)
+end)
