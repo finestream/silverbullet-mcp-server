@@ -1,5 +1,5 @@
 // Where a `${…}` directive ends, and that the write filter judges every directive the running release
-// evaluates (docs/facts/write-filter.md, section 8): the end within the block, 3.0's braces inside Lua
+// evaluates (docs/facts/write-filter.md, section 6): the end within the block, 3.0's braces inside Lua
 // strings and comments, page variables. Runs as alice on gamma.
 
 import test, { before } from "node:test";

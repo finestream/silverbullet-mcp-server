@@ -135,16 +135,21 @@ export class SilverBullet {
     return { readOnly: json.readOnly === true, spacePrefixes: Array.isArray(json.spacePrefixes) ? json.spacePrefixes : [] };
   }
 
-  /** The instance's release as `/<space>/.ping` names it (`X-Server-Version`, measured on 2.12.1 and 3.0.0); null when it names none. */
+  /**
+   * The instance's release as `/<space>/.ping` names it (`X-Server-Version`, measured on 2.12.1 and 3.0.0);
+   * null when the answer names none. No answer, or an error, throws: that says nothing about the release.
+   */
   async version(token: string, space: string): Promise<string | null> {
     let r: Response;
+    let body: string;
     try {
       r = await fetch(`${this.url}/${space}/.ping`, { headers: this.headers(token) });
+      body = await r.text();
     } catch (e) {
       throw new SbError(0, space, null, "", { cause: e });
     }
-    await r.arrayBuffer();
-    return r.ok ? r.headers.get("x-server-version") : null;
+    if (!r.ok) throw new SbError(r.status, space, null, body);
+    return r.headers.get("x-server-version");
   }
 
   async list(token: string, space: string): Promise<SbFile[]> {

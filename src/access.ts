@@ -144,6 +144,24 @@ function reach(acl: AccessList, user: string, groups: readonly string[], space: 
 }
 
 /**
+ * Whether the list leaves room for a file that one of `subjects` may not read and that SilverBullet
+ * takes for a `![[target]]` of this path when there is no file of exactly that path: one whose path
+ * ends in it, in any case (docs/security.md, section 5). Told from the list alone, never from the
+ * files, so that the answer says nothing about a file nobody may know of.
+ */
+export function hidingPlaces(acl: AccessList, subjects: readonly Subject[], space: string): (path: string) => boolean {
+  const ends = new Set<string>();
+  for (const s of subjects) {
+    for (const p of reach(acl, s.user, s.groups, space)) {
+      if (p.rights.has("r")) continue;
+      if (p.path.endsWith("/")) return () => true; // a file of any name may lie there
+      for (const file of [p.path, `${p.path}.md`]) ends.add(`/${file.toLowerCase()}`);
+    }
+  }
+  return (path) => [...ends].some((file) => file.endsWith(`/${path.toLowerCase()}`));
+}
+
+/**
  * Whether the user may read a page, per path, for the row filter of a render (docs/security.md,
  * section 12): `exact` for the exact entries, `folders` for the folder entries (`X/`), `root`
  * for the rest of the space. The render script looks a page name up in that order, the folders

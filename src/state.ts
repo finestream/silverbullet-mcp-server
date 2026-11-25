@@ -15,11 +15,12 @@ export type SpaceState = {
   guarded: boolean;
   /** Why the space is not guarded, when it is not. */
   unguardedReason: string | null;
-  /** The instance's release at the last scan; null when SilverBullet named none. */
+  /** The instance's release as last named, kept while SilverBullet does not answer; null when it named none. */
   release: string | null;
   /**
-   * Whether SilverBullet itself loads code from Library/ only (3 and newer): CONFIG is then a page
-   * like any other, and the index-time transform is not needed (docs/security.md, section 10).
+   * Whether CONFIG is a page like any other, as SilverBullet 3 and newer take it, which load code
+   * from Library/ only. Also while the release is not known: CONFIG is exempt from the filter and
+   * the scan only where the release is known to be 2.
    */
   libraryOnly: boolean;
   transform: "present" | "missing" | "not-needed" | "unchecked";
@@ -91,7 +92,7 @@ export class State {
         guarded: false,
         unguardedReason: "not yet checked",
         release: null,
-        libraryOnly: false,
+        libraryOnly: true,
         transform: "unchecked",
         findings: [],
         files: [],
@@ -155,9 +156,9 @@ export class State {
     return null;
   }
 
-  /** Whether CONFIG is an ordinary page in the space (SilverBullet 3); false until a scan has seen the release. */
+  /** Whether CONFIG is an ordinary page in the space: unless a scan has seen that the release is 2. */
   libraryOnly(space: string): boolean {
-    return this.spaces.get(space)?.libraryOnly ?? false;
+    return this.spaces.get(space)?.libraryOnly ?? true;
   }
 
   /** Why rendering is blocked in a space (docs/security.md, section 7), or null. Read by the render tools. */

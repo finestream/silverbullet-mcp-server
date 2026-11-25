@@ -65,8 +65,8 @@ const SCRIPT_TAGS = new Set(["space-lua", "space-style"]);
 export type TransclusionCheck = {
   /** The name of the page being checked, without `.md`. */
   page: string;
-  /** Why the page or file `target` may not be transcluded here, or null when it may. */
-  denied(target: string): string | null;
+  /** Why the file at `path` may not be transcluded here, or null when it may; with `lookup` another file may be shown in its place (`FileIndex`). */
+  denied(path: string, lookup: boolean): string | null;
 };
 
 /** The rule of a transclusion whose target its reader may not read: not code, so the refusals word it apart. */
@@ -126,32 +126,47 @@ const MAX_READINGS = 32;
 /** A URL with a scheme, or a protocol-relative one: not a file of the space. */
 const EXTERNAL = /^([A-Za-z][A-Za-z0-9+.-]*:|\/\/)/;
 
+/** The file a name stands for, as SilverBullet reads it (`normalizePath`): a name without an extension is a page. */
+function filePath(name: string): string {
+  return /[^]\.[A-Za-z0-9]+$/.test(name) ? name : `${name}.md`;
+}
+
 /**
- * The pages or files a transclusion may resolve to, as names the access list is matched against.
+ * A file a transclusion may stand for: its full path, and whether SilverBullet, when there is no
+ * such file, looks for others in its place (`FileIndex`).
+ */
+export type TransclusionTarget = { path: string; lookup: boolean };
+
+/**
+ * The files a transclusion may resolve to, as full paths.
  * SilverBullet (2.12.1 and 3.0.0, measured, docs/security.md, section 5) takes `Page`, `/Page`, `^Page` and
  * `Page.md`, and cuts a heading (`#`), a position (`@`) or an anchor (`$`); the image form also
- * resolves `..` against the page's folder. Where a character could be part of the name or start
- * a suffix, both readings are returned, and the caller requires every one of them to be readable.
+ * resolves `..` against the page's folder, and is taken as it is. Where a character could be part of
+ * the name or start a suffix, both readings are returned, and the caller requires every one of them
+ * to be readable.
  */
-export function transclusionTargets(raw: string, page: string, image: boolean): string[] {
-  const out = new Set<string>();
+export function transclusionTargets(raw: string, page: string, image: boolean): TransclusionTarget[] {
+  const out = new Map<string, TransclusionTarget>();
   const add = (name: string) => {
     // No file has a name this long; what the filter cannot read as a name is refused as one.
     if (name.length > MAX_TARGET) name = name.slice(0, MAX_TARGET);
-    // The shortest reading first: it is the one SilverBullet takes unless the character is part of the name.
+    // The shortest reading first: it is the one SilverBullet takes.
     const cuts: number[] = [];
     for (let i = 0; i < name.length && cuts.length < MAX_READINGS; i++) if (name[i] === "#" || name[i] === "@" || name[i] === "$") cuts.push(i);
     if (!name.startsWith("#")) cuts.push(name.length); // `#Heading` alone is the page itself
-    for (const cut of cuts) {
-      const candidate = name.slice(0, cut).replace(/\.md$/, "");
-      if (candidate && candidate !== page) out.add(candidate);
+    for (const [i, cut] of cuts.entries()) {
+      const reading = name.slice(0, cut);
+      const path = filePath(reading);
+      if (reading === "" || path === `${page}.md`) continue;
+      const lookup = !image && i === 0;
+      if (lookup || !out.has(path)) out.set(path, { path, lookup });
     }
   };
   if (!image) {
     const name = raw.split("|")[0].replace(/^\^/, "").replace(/^\/+/, "");
     add(name);
     if (name.trim() !== name) add(name.trim());
-    return [...out];
+    return [...out.values()];
   }
   if (EXTERNAL.test(raw)) return [];
   const readings = new Set([raw]);
@@ -171,26 +186,52 @@ export function transclusionTargets(raw: string, page: string, image: boolean): 
       add(segments.join("/"));
     }
   }
-  return [...out];
+  return [...out.values()];
 }
 
 /**
- * The names a target may stand for among the pages and files of the space. SilverBullet 2.12 expands
- * an exact name only; 3.0 (measured) takes an exact name first and otherwise every file whose path
- * ends in the target, in any case: `![[deep]]` shows `Folder/Deep`. Which of several it takes
- * depends on the page, so the caller requires all of them to be readable.
+ * The files of a space as SilverBullet looks a `![[target]]` up among them (`resolvePath` of 2.12.1 and
+ * 3.0.0; measured in the editor of both and in the expansion of 3.0.0): the file of exactly that path,
+ * otherwise every file whose path ends in it, in any case: `![[deep]]` shows `Folder/Deep`. Which of
+ * several it takes depends on the page, so the caller requires all of them to be readable.
  */
-export function resolutions(target: string, names: readonly string[]): string[] {
-  if (names.includes(target)) return [target];
-  const lower = target.toLowerCase();
-  return [target, ...names.filter((n) => n.toLowerCase() === lower || n.toLowerCase().endsWith(`/${lower}`))];
+export class FileIndex {
+  private readonly paths: ReadonlySet<string>;
+  /** Every end of every path, from a `/` on, in lower case. */
+  private readonly ends = new Map<string, string[]>();
+
+  constructor(paths: Iterable<string>) {
+    this.paths = new Set(paths);
+    for (const path of this.paths) {
+      const lower = path.toLowerCase();
+      for (let i = 0; ; ) {
+        const end = lower.slice(i);
+        const files = this.ends.get(end);
+        if (files) files.push(path);
+        else this.ends.set(end, [path]);
+        const slash = lower.indexOf("/", i);
+        if (slash < 0) break;
+        i = slash + 1;
+      }
+    }
+  }
+
+  has(path: string): boolean {
+    return this.paths.has(path);
+  }
+
+  /** The files taken for `path` when there is none of exactly that path; the same array for every spelling. */
+  others(path: string): readonly string[] {
+    return this.paths.has(path) ? NO_FILES : (this.ends.get(path.toLowerCase()) ?? NO_FILES);
+  }
 }
+const NO_FILES: readonly string[] = [];
 
 /**
  * Pages the filter does not apply to: where code belongs (docs/security.md, section 2). SilverBullet 3
  * runs code from Library/ only (`libraryOnly`); there CONFIG is a page like any other.
  */
-export function isCodePlace(page: string, libraryOnly = false): boolean {
+export function isCodePlace(page: string, libraryOnly: boolean): boolean {
   return page.startsWith("Library/") || (!libraryOnly && (page === "CONFIG" || page === "CONFIG.md"));
 }
 
@@ -298,13 +339,24 @@ export function checkPage(source: string, allow: Allowlist, transclusion?: Trans
 export function verdictOf(source: string, analysis: Analysis, transclusion?: TransclusionCheck): Verdict {
   const violations = [...analysis.violations];
   if (transclusion) {
+    // A page may hold the same transclusion thousands of times: every text and every file is judged once.
+    const byText = new Map<string, string | null>();
+    const byTarget = new Map<string, string | null>();
+    const judged = (key: string, known: Map<string, string | null>, judge: () => string | null) => {
+      let why = known.get(key);
+      if (why === undefined) known.set(key, (why = judge()));
+      return why;
+    };
+    const denied = ({ path, lookup }: TransclusionTarget) => judged(`${lookup}\n${path}`, byTarget, () => transclusion.denied(path, lookup));
     for (const t of analysis.transclusions) {
-      for (const target of transclusionTargets(t.raw, transclusion.page, t.image)) {
-        const why = transclusion.denied(target);
-        if (!why) continue;
-        violations.push({ rule: TRANSCLUSION_RULE, detail: `${source.slice(t.from, Math.min(t.to, t.from + 60))}: ${why}`, line: t.line, from: t.from, to: t.to });
-        break; // one reason per transclusion
-      }
+      const why = judged(`${t.image}\n${t.raw}`, byText, () => {
+        for (const target of transclusionTargets(t.raw, transclusion.page, t.image)) {
+          const reason = denied(target);
+          if (reason !== null) return reason; // one reason per transclusion
+        }
+        return null;
+      });
+      if (why !== null) violations.push({ rule: TRANSCLUSION_RULE, detail: `${source.slice(t.from, Math.min(t.to, t.from + 60))}: ${why}`, line: t.line, from: t.from, to: t.to });
     }
   }
   return { ok: violations.length === 0, violations, directives: analysis.directives };

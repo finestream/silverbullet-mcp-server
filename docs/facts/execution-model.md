@@ -91,7 +91,7 @@ Roadmap: nothing in the repository (`CHANGELOG.md` *Edge*: "Nothing yet"; ADRs 0
 * **`${…}`** also takes an assignment, `${name = expr}` or `${local name = expr}`: page variables, defined by the page's stored text. Where a directive ends has changed: [write-filter.md](write-filter.md), section 6.
 * **Unchanged**: `*.plug.js` files load from anywhere (`client/space.ts`), `.html` is served inline, `.lua` runs through `dofile` only, `space-config` and a fence in an HTML comment are inert.
 * **File API:** a read's `ETag` is `sha256-typed:<hash>`, which `If-Match` refuses; the content revision that writes are conditioned on, `sha256:<hash>`, is in `X-SilverBullet-Revision`, as on 2.12.1 (`server/src/handlers/fs.rs`).
-* **Transclusions** resolve like links: an exact path first, otherwise the files whose path ends in the target, in any case (`plug-api/lib/resolve_path.ts`).
+* **Transclusions** (`![[…]]`) resolve like links: an exact path first, otherwise the files whose path ends in the target, in any case (`plug-api/lib/resolve_path.ts`, the same in 2.12.1). New in 3.0 is that `markdown.expandMarkdown` does it too; the editor of 2.12.1 already did (measured: `![[deep]]`, `![[Sub/Deep]]`, `![[Deep.MD]]` and `![[pic.png]]` read and show `Trx/Sub/Deep.md` and `Trx/Sub/pic.png`, while `expandMarkdown` of 2.12.1 leaves them). The image form, `![](path)`, is resolved against the page's folder and never looked up, in the editor and the expansion of both.
 * **Index:** `index.libraryPages` (`index.metaPages` is an alias) and `index.data`; `index.contentPages` drops every Library page, `Library/Config` among them; headers and table rows carry `itags`.
 
 ## Open points and surprises
