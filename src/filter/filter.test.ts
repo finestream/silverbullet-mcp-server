@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { checkPage, findTransclusions, transclusionTargets } from "./filter.ts";
+import { checkPage, codePlaces, findTransclusions, isCodePlace, resolutions, transclusionTargets } from "./filter.ts";
 import { cases, matrixReader } from "./cases.ts";
 import { readFileSync } from "node:fs";
 import { compileAllowlist, isNeverAllowed, NEVER_ALLOWED, parseAllowlist, REVIEWED_MEMBERS, SHIPPED_ALLOWLIST, shippedAllowlist, validateAllowlist } from "./allowlist.ts";
@@ -180,4 +180,69 @@ test("filter: transclusions are found in time linear in the page, whatever unclo
   // Several openers before one close: the first and the last are both reported.
   assert.deepEqual(findTransclusions("![[a ![[b ![[CONFIG]]").map((t) => t.raw), ["a ![[b ![[CONFIG", "CONFIG"]);
   assert.deepEqual(findTransclusions("![x](/a) ![[b|c]] ![y](<d e> \"t\")").map((t) => `${t.image ? "image" : "wiki"} ${t.raw}`), ["image /a", "wiki b|c", "image d e"]);
+});
+
+test("filter: a directive is judged by the end each release takes: 3.0 does not count braces in Lua strings, long brackets and comments", () => {
+  const allow = shippedAllowlist();
+  const call = "tostring(1)";
+  for (const page of [
+    `x \${"{" .. ${call}} y`,
+    `x \${'{' .. ${call}} y`,
+    `x \${[[{]] .. ${call}} y`,
+    `x \${[==[{]==] .. ${call}} y`,
+    `x \${1 --[[ { ]] + ${call}} y`,
+    `x \${1 --[==[ { ]==] + ${call}} y`,
+    `x \${"\\"{" .. ${call}} y`,
+    `| a |\n|---|\n| \${"{" .. ${call}} |\n`,
+    `x \${${call}} y`,
+  ]) {
+    const v = checkPage(page, allow);
+    assert.ok(v.violations.some((x) => x.rule === "call-not-allowed" && x.detail === "tostring"), `${page}: ${JSON.stringify(v.violations)}`);
+  }
+  for (const page of ['x ${"{"} y', 'x ${"a" .. [[{]]} y', 'x ${query[[from p = index.tag "page" where p.name == "{" select p.name]]} y', "x ${ { a = 1 } } y"]) {
+    assert.equal(checkPage(page, allow).ok, true, page);
+  }
+  // An end only one of them takes is checked as well.
+  assert.equal(checkPage('x ${"}" .. "a"} y', allow).ok, false, "2.12 ends it inside the string, where it does not parse");
+});
+
+test("filter: every ${ is judged on its own, since SilverBullet looks for a directive's end within its block", () => {
+  const allow = shippedAllowlist();
+  for (const page of ["a ${[[ {\n\n${tostring(1)} } ]] }\n", "a ${[[ {\n\n- ${tostring(1)} } ]] }\n", "${[[ {\n# ${tostring(1)} } ]] }\n", '${"${tostring(1)}"}\n']) {
+    const v = checkPage(page, allow);
+    assert.ok(v.violations.some((x) => x.detail === "tostring"), `${JSON.stringify(page)}: ${JSON.stringify(v.violations)}`);
+  }
+});
+
+test("filter: page variables of 3.0 (assignments) are refused", () => {
+  const allow = shippedAllowlist();
+  for (const body of ["x = 1", "local x = 1", " x=1", 'string = "a"', 'total = string.len("a")', "x = y", "x == 1 and 2"]) {
+    assert.equal(checkPage(`a \${${body}} b`, allow).ok, false, body);
+  }
+});
+
+test("filter: many openers cost a bounded time", () => {
+  for (const piece of ["${", '${"', "${[[", "${--[[", "${ { ", "${}", '${"a"} ', "${[[ { }]] }"]) {
+    const t0 = performance.now();
+    checkPage(piece.repeat(20_000), shippedAllowlist());
+    assert.ok(performance.now() - t0 < 5000, `${piece}: ${Math.round(performance.now() - t0)} ms`);
+  }
+});
+
+test("resolutions: an exact name stands for itself, another for every file whose path ends in it, in any case", () => {
+  const names = ["index", "Private/Plan", "Notes/plan", "Private/Plans", "img.png"];
+  assert.deepEqual(resolutions("Private/Plan", names), ["Private/Plan"]);
+  assert.deepEqual(resolutions("private/plan", names), ["private/plan", "Private/Plan"]);
+  assert.deepEqual(resolutions("Plan", names), ["Plan", "Private/Plan", "Notes/plan"]);
+  assert.deepEqual(resolutions("lan", names), ["lan"]);
+  assert.deepEqual(resolutions("IMG.png", names), ["IMG.png", "img.png"]);
+  assert.deepEqual(resolutions("Missing", []), ["Missing"]);
+});
+
+test("code places: Library/ always, CONFIG on SilverBullet 2 only", () => {
+  for (const page of ["Library/Config", "Library/Any/Page"]) assert.ok(isCodePlace(page) && isCodePlace(page, true), page);
+  for (const page of ["Library", "library/x", "Notes/Library/x", "Config"]) assert.ok(!isCodePlace(page) && !isCodePlace(page, true), page);
+  assert.ok(isCodePlace("CONFIG") && !isCodePlace("CONFIG", true));
+  assert.equal(codePlaces(false), "CONFIG and Library/");
+  assert.equal(codePlaces(true), "Library/");
 });

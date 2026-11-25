@@ -14,6 +14,7 @@ export const SHIPPED_ALLOWLIST: readonly string[] = [
   "index.aggregates",
   "index.aspiringPages",
   "index.contentPages",
+  "index.data",
   "index.describeSchema",
   "index.documents",
   "index.extractFrontmatter",
@@ -21,6 +22,7 @@ export const SHIPPED_ALLOWLIST: readonly string[] = [
   "index.headers",
   "index.isAvailable",
   "index.items",
+  "index.libraryPages",
   "index.links",
   "index.metaPages",
   "index.objects",
@@ -42,8 +44,8 @@ export const SHIPPED_ALLOWLIST: readonly string[] = [
  * callbacks, and the functions that evaluate their input. A bare name covers
  * everything under it (`space` covers `space.readPage`); a dotted name covers
  * that function only. The only way through is an exact entry naming a member
- * of REVIEWED_MEMBERS. Reviewed against SilverBullet 2.12.1 (docs/security.md,
- * section 6, holds the reason per member).
+ * of REVIEWED_MEMBERS. Reviewed against SilverBullet 2.12.1 and 3.0.0
+ * (docs/security.md, section 6, holds the reason per member).
  */
 export const NEVER_ALLOWED: readonly string[] = [
   // Lua loaders and reflection
@@ -54,8 +56,13 @@ export const NEVER_ALLOWED: readonly string[] = [
   "space", "config", "net", "http", "sandboxFetch", "shell", "js", "system", "editor", "datastore", "clientStore",
   "event", "sync", "dom", "mq", "asset", "widget", "codeWidget", "spacelua", "lua", "service", "capture", "view", "navigator",
   "github", "share", "journal.openOrCreate", "embed",
+  // SilverBullet 3: credentials and sign-in, writing objects where they stand, values other pages
+  // read as variables, the form editor, sharing with another space, the device's theme
+  "auth", "oauth", "object", "pageVars", "objectForm", "sbShare", "theme",
+  // SilverBullet 3: returns text of any page, past the row filter of the render tools
+  "search",
   // registries that store Lua callbacks in the client's configuration
-  "tag", "command", "slashCommand", "slashcommand", "schema", "aggregate", "actionButton", "keyboardBar",
+  "tag", "command", "slashCommand", "slashcommand", "schema", "aggregate", "actionButton", "keyboardBar", "markupBar",
   "syntax", "taskState", "virtualPage", "identity.define", "toggleReadOnlyMode",
   // functions that evaluate their input, or read a page named by it and evaluate that
   "template.new", "template.fromPage", "template.createPageFromTemplate", "markdown",
@@ -68,7 +75,7 @@ export const NEVER_ALLOWED: readonly string[] = [
 
 /**
  * Members of never-allowed namespaces that only read the clock, build a plain table or
- * report a fact about the client, reviewed one by one against SilverBullet 2.12.1
+ * report a fact about the client, reviewed one by one against SilverBullet 2.12.1 and 3.0.0
  * (docs/security.md, section 6). An exact allowlist entry naming one of them is valid;
  * a wildcard under the namespace, or a member not listed here, is not. The release
  * checks (test/checks) assert that each still exists and behaves as reviewed.
@@ -86,6 +93,8 @@ export const REVIEWED_MEMBERS: readonly string[] = [
   "editor.getCurrentPage", "editor.getCurrentPageMeta", "editor.getCurrentPath", "editor.isMobile", "editor.isNarrowScreen",
   // spacelua: the base URL of the client
   "spacelua.baseUrl",
+  // search: ranks the rows it is given
+  "search.rank",
 ];
 
 const REVIEWED = new Set(REVIEWED_MEMBERS);

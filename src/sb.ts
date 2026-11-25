@@ -15,6 +15,12 @@ export type SbFile = {
 
 export type SpaceConfig = { readOnly: boolean; spacePrefixes: string[] };
 
+/** The major release of a version string (`3.0.0-0-g0f9b90bb-…`); null when it names none. */
+export function majorOf(version: string | null): number | null {
+  const m = /^v?(\d+)\.\d/.exec(version ?? "");
+  return m ? Number(m[1]) : null;
+}
+
 export class SbError extends Error {
   readonly status: number;
   readonly space: string;
@@ -91,6 +97,13 @@ export class RuntimeError extends Error {
 
 export type ScreenshotOptions = { selector?: string; fullPage?: boolean };
 
+/**
+ * The content revision of a response, in the form of an ETag: the one conditional writes are compared with.
+ * SilverBullet names it in a header of its own; the ETag of a read is the same on 2.12, but names the typed
+ * representation on 3.0 (`sha256-typed:`), which `If-Match` does not take (both measured).
+ */
+const revisionHeader = (r: Response): string | null => r.headers.get("x-silverbullet-revision") ?? r.headers.get("etag");
+
 const encodePath = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 
 export class SilverBullet {
@@ -122,6 +135,18 @@ export class SilverBullet {
     return { readOnly: json.readOnly === true, spacePrefixes: Array.isArray(json.spacePrefixes) ? json.spacePrefixes : [] };
   }
 
+  /** The instance's release as `/<space>/.ping` names it (`X-Server-Version`, measured on 2.12.1 and 3.0.0); null when it names none. */
+  async version(token: string, space: string): Promise<string | null> {
+    let r: Response;
+    try {
+      r = await fetch(`${this.url}/${space}/.ping`, { headers: this.headers(token) });
+    } catch (e) {
+      throw new SbError(0, space, null, "", { cause: e });
+    }
+    await r.arrayBuffer();
+    return r.ok ? r.headers.get("x-server-version") : null;
+  }
+
   async list(token: string, space: string): Promise<SbFile[]> {
     const r = await this.call(token, space, "");
     return (await r.json()) as SbFile[];
@@ -129,7 +154,7 @@ export class SilverBullet {
 
   async read(token: string, space: string, path: string): Promise<{ etag: string | null; body: Buffer; contentType: string }> {
     const r = await this.call(token, space, path);
-    return { etag: r.headers.get("etag"), body: Buffer.from(await r.arrayBuffer()), contentType: r.headers.get("content-type") ?? "" };
+    return { etag: revisionHeader(r), body: Buffer.from(await r.arrayBuffer()), contentType: r.headers.get("content-type") ?? "" };
   }
 
   async write(
@@ -143,7 +168,7 @@ export class SilverBullet {
     if (opts.ifMatch) headers["If-Match"] = opts.ifMatch;
     if (opts.ifNoneMatch) headers["If-None-Match"] = opts.ifNoneMatch;
     const r = await this.call(token, space, path, { method: "PUT", body: body as RequestInit["body"], headers });
-    return { etag: r.headers.get("etag") };
+    return { etag: revisionHeader(r) };
   }
 
   async delete(token: string, space: string, path: string, opts: { ifMatch?: string } = {}): Promise<void> {

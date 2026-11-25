@@ -24,7 +24,7 @@ proposals.tag = "change-proposal"
 -----------------------------------------------------------------------
 -- proposals.defaults
 --
--- Fallback values for the "proposals" section of the CONFIG page.
+-- Fallback values for the "proposals" section of the configuration page.
 -----------------------------------------------------------------------
 proposals.defaults = {
 	deleteClosed = true,                     -- delete a proposal page once it is applied or rejected
@@ -36,7 +36,7 @@ proposals.defaults = {
 -----------------------------------------------------------------------
 -- proposals.config()
 --
--- Reads the "proposals" section of the CONFIG page.
+-- Reads the "proposals" section of the configuration page.
 --
 -- Returns:
 --   Table with the configured values, and the defaults for every key

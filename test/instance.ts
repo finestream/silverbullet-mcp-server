@@ -106,7 +106,8 @@ async function stateIsCurrent(inst: Instance): Promise<boolean> {
       const token = state[`SB_TOKEN_${user}`];
       if (!token || (await sb.config(token, space)).status !== 200) return false;
     }
-    return true;
+    // The same volume under another image: the configuration page has moved.
+    return (await sb.release(state.SB_TOKEN_ADMIN, "alpha")) === state.SB_RELEASE;
   } catch {
     return false;
   }

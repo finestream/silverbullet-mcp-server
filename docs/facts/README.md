@@ -1,6 +1,6 @@
 # Facts
 
-Measured behaviour of SilverBullet **2.12.1** that the [security model](../security.md) rests on. These are observations, not decisions: each page says what was tested, how, and what the source says. Source references are `path:line` at tag `2.12.1` of [silverbulletmd/silverbullet](https://github.com/silverbulletmd/silverbullet), relative to its repository root.
+Measured behaviour of SilverBullet **2.12.1** that the [security model](../security.md) rests on, and in a section of its own on each page what is different in **3.0.0** (measured on 2026-11-25 on the Docker image, commit `0f9b90b`; the release checks in [`test/`](../../test/) assert both). These are observations, not decisions: each page says what was tested, how, and what the source says. Source references are `path:line` at tag `2.12.1` of [silverbulletmd/silverbullet](https://github.com/silverbulletmd/silverbullet), relative to its repository root.
 
 | Page | Question |
 |---|---|

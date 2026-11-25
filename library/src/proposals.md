@@ -24,7 +24,7 @@ Pages call `proposals.list()` only, so a space that restricts what pages may cal
 
 ## Configuration
 
-Configuration is optional. To change the defaults, add the following section to your `CONFIG` page in a space-lua block:
+Configuration is optional. To change the defaults, add the following section to your configuration page (`Library/Config`; `CONFIG` on SilverBullet 2) in a space-lua block:
 
 ```lua
 config.set {

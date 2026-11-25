@@ -4,7 +4,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sb, T, S } from "../lib/env.ts";
+import { sb, T, S, V3 } from "../lib/env.ts";
 
 test("access: a user's API token works on every space the user may reach", async () => {
   assert.equal((await sb.read(T.alice, S.alpha, "Rendered.md")).status, 200);
@@ -42,15 +42,18 @@ test("[watch] access: /.dashboard/api/spaces accepts no API token (the user's sp
   assert.equal(r.status, 401, `now ${r.status}: space discovery could use this endpoint instead of probing /.config`);
 });
 
-test("access: conditional writes: stale If-Match is 412, If-None-Match * on an existing file is 412, ETags are strong sha256", async () => {
+test("access: conditional writes: stale If-Match is 412, If-None-Match * on an existing file is 412; X-SilverBullet-Revision is the revision If-Match takes, and the ETag of a read is it on SilverBullet 2 only", async () => {
   const page = "Conditional.md";
   const created = await sb.write(T.alice, S.alpha, page, "first");
   assert.ok([200, 201, 204].includes(created.status), `create: ${created.status}`);
   const read = await sb.read(T.alice, S.alpha, page);
-  assert.match(read.etag ?? "", /^"sha256:[0-9a-f]+"$/, `etag ${read.etag}`);
+  const revision = read.headers.get("x-silverbullet-revision") ?? "";
+  assert.match(revision, /^"sha256:[0-9a-f]+"$/, `revision ${revision}`);
+  assert.equal(read.etag, V3 ? revision.replace("sha256:", "sha256-typed:") : revision, "the ETag of a read");
+  if (V3) assert.equal((await sb.write(T.alice, S.alpha, page, "typed", { "If-Match": read.etag! })).status, 412, "the ETag of a read is not taken");
   assert.equal((await sb.write(T.alice, S.alpha, page, "second", { "If-Match": '"sha256:stale"' })).status, 412);
   assert.equal((await sb.write(T.alice, S.alpha, page, "third", { "If-None-Match": "*" })).status, 412);
-  assert.ok([200, 201, 204].includes((await sb.write(T.alice, S.alpha, page, "fourth", { "If-Match": read.etag! })).status), "a fresh If-Match writes");
+  assert.ok([200, 201, 204].includes((await sb.write(T.alice, S.alpha, page, "fourth", { "If-Match": revision })).status), "a fresh If-Match writes");
   await sb.remove(T.alice, S.alpha, page);
 });
 

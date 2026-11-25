@@ -1,5 +1,5 @@
-# The allowlist of the write filter: what a page outside CONFIG and Library/
-# may call or reference (docs/security.md, section 6). One entry per line:
+# The allowlist of the write filter: what a page outside Library/ (and CONFIG
+# on SilverBullet 2) may call or reference (docs/security.md, section 6). One entry per line:
 # `name`, `name.sub`, `name.*` or `*.method`. Every entry is audited before
 # it is added; the never-allowed names cannot be added, the server refuses to
 # serve on an entry that covers one. The one exception: a reviewed harmless
@@ -16,6 +16,7 @@ string.*
 index.aggregates
 index.aspiringPages
 index.contentPages
+index.data
 index.describeSchema
 index.documents
 index.extractFrontmatter
@@ -23,6 +24,7 @@ index.getObjectByRef
 index.headers
 index.isAvailable
 index.items
+index.libraryPages
 index.links
 index.metaPages
 index.objects

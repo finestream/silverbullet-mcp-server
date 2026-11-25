@@ -9,7 +9,7 @@
 
 import test, { before } from "node:test";
 import assert from "node:assert/strict";
-import { sb, T, S } from "../lib/env.ts";
+import { sb, T, S, V3 } from "../lib/env.ts";
 import { NEVER_ALLOWED, REVIEWED_MEMBERS } from "../../src/filter/allowlist.ts";
 
 before(async () => {
@@ -17,13 +17,13 @@ before(async () => {
 });
 
 /**
- * Globals of 2.12.1 that are neither never allowed nor shipped: plain Lua, pure helpers and
+ * Globals of 2.12.1 and 3.0.0 that are neither never allowed nor shipped: plain Lua, pure helpers and
  * the standard library's data tables. Not on the shipped allowlist; an operator may add them
  * after audit. Reviewed with the never-allowed list (docs/security.md, section 6).
  */
 const HARMLESS_GLOBALS = [
   "_VERSION", "assert", "error", "pcall", "xpcall", "print", "type", "tostring", "tonumber", "select", "next", "pairs", "ipairs", "each", "some",
-  "string", "table", "math", "encoding", "crypto", "date", "yaml", "jsonschema", "language", "icon", "search",
+  "string", "table", "math", "encoding", "crypto", "date", "yaml", "jsonschema", "language", "icon",
   "templates", "tags", "widgets", "formatMarkdownTable", "nodeParentOfType",
   // `index`, `template`, `identity` and `journal` have never-allowed members and are covered by those.
 ];
@@ -98,5 +98,6 @@ test("api: every global of the release's Lua environment is classified (never al
   assert.deepEqual(unknown, [], "new globals in this release: review each and add it to NEVER_ALLOWED (src/filter/allowlist.ts) or to HARMLESS_GLOBALS here, and to docs/security.md section 6");
   // The never-allowed roots that exist in this release; the ones that do not are kept against a release that adds them.
   const absent = NEVER_ROOTS.filter((n) => !globals.includes(n));
-  assert.deepEqual(absent.sort(), ["debug", "io", "loadstring", "package", "require"].sort(), "never-allowed names absent from this release");
+  const ofTheOther = V3 ? [] : ["auth", "oauth", "object", "pageVars", "objectForm", "sbShare", "theme", "markupBar"];
+  assert.deepEqual(absent.sort(), ["debug", "io", "loadstring", "package", "require", ...ofTheOther].sort(), "never-allowed names absent from this release");
 });

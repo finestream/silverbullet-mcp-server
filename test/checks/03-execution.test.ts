@@ -4,7 +4,7 @@
 
 import test, { before } from "node:test";
 import assert from "node:assert/strict";
-import { sb, T, S, until } from "../lib/env.ts";
+import { sb, T, S, V3, CONFIG_PAGE, until } from "../lib/env.ts";
 import { renderScript } from "../lib/lua.ts";
 
 before(async () => {
@@ -12,7 +12,7 @@ before(async () => {
   await sb.runtimeReady(T.alice, S.alpha);
 });
 
-test("execution: only space-lua and space-style fences are indexed as objects; space-config is inert (section 1)", async () => {
+test("execution: only space-lua and space-style fences are indexed as objects (on SilverBullet 3 from Library/ only); space-config is inert (section 1)", async () => {
   const r = await sb.lua(
     T.alice,
     S.alpha,
@@ -24,7 +24,7 @@ test("execution: only space-lua and space-style fences are indexed as objects; s
 }`,
   );
   const got = r.result as Record<string, unknown>;
-  assert.deepEqual({ lua: got.lua, style: got.style, config: got.config, fromConfigFence: got.fromConfigFence ?? null }, { lua: 1, style: 1, config: 0, fromConfigFence: null }, r.raw);
+  assert.deepEqual({ lua: got.lua, style: got.style, config: got.config, fromConfigFence: got.fromConfigFence ?? null }, { lua: V3 ? 0 : 1, style: V3 ? 0 : 1, config: 0, fromConfigFence: null }, r.raw);
 });
 
 test("execution: a lua fence and a space-lua fence inside an HTML comment are inert (sections 1, 5)", async () => {
@@ -45,8 +45,8 @@ test("execution: ${...} inside a code span is text; outside it is evaluated (sec
 });
 
 test("execution: every query clause is full Lua: where reads a page, defines a function, assigns a global (section 2)", async () => {
-  const d1 = await sb.lua(T.alice, S.alpha, `return #query[[from p = index.tag "page" where string.find(space.readPage("CONFIG"), "CONFIG%-SECRET") ~= nil limit 1]]`);
-  assert.equal(d1.result, 1, `where reads CONFIG: ${d1.raw}`);
+  const d1 = await sb.lua(T.alice, S.alpha, `return #query[[from p = index.tag "page" where string.find(space.readPage("${CONFIG_PAGE}"), "CONFIG%-SECRET") ~= nil limit 1]]`);
+  assert.equal(d1.result, 1, `where reads ${CONFIG_PAGE}: ${d1.raw}`);
   const d2 = await sb.lua(T.alice, S.alpha, `return #query[[from p = index.tag "page" where (function() return true end)() limit 1]]`);
   assert.equal(d2.result, 1, `a function defined in where runs: ${d2.raw}`);
   const d3 = await sb.lua(T.alice, S.alpha, `local _ = query[[from p = index.tag "page" where (function() _G.leaked_from_where = "set" return true end)() limit 1]] return _G.leaked_from_where`);

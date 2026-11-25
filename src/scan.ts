@@ -1,14 +1,15 @@
 // The scan (docs/security.md, sections 7 and 8) and the transform check
 // (section 10), as the technical user (`MCP_SCAN_USER`, default `scan`): which spaces are guarded,
-// whether CONFIG holds the shipped transform block, which pages outside
-// CONFIG and Library/ hold code, which files are not pages; the report page
-// per space; the quarantine when the operator chose it.
+// which release the instance runs and, on SilverBullet 2, whether CONFIG holds
+// the shipped transform block, which pages outside Library/ (and CONFIG on
+// SilverBullet 2) hold code, which files are not pages; the report page per
+// space; the quarantine when the operator chose it.
 
-import { checkPage, isCodePlace, type TransclusionCheck, type Verdict, type Violation } from "./filter/filter.ts";
+import { checkPage, codePlaces, isCodePlace, resolutions, type TransclusionCheck, type Verdict, type Violation } from "./filter/filter.ts";
 import { checkPageLimited, CheckTimeout } from "./filter/check.ts";
 import { compileAllowlist, type Allowlist } from "./filter/allowlist.ts";
 import { pageNameOf, pathMatches, renderersWithoutRead, type AccessList, type Subject } from "./access.ts";
-import { SbError, type SilverBullet, type SbFile } from "./sb.ts";
+import { SbError, majorOf, type SilverBullet, type SbFile } from "./sb.ts";
 import type { Config } from "./config.ts";
 import type { State, SpaceState, Finding, FileFinding } from "./state.ts";
 import type { Log } from "./log.ts";
@@ -29,6 +30,9 @@ local function confine(o)
 end
 tag.define { name = "space-lua", transform = confine }
 tag.define { name = "space-style", transform = confine }`;
+
+/** The major release since which SilverBullet runs space-lua and space-style from Library/ only (docs/facts/execution-model.md, section 8). */
+export const LIBRARY_ONLY_SINCE = 3;
 
 /** Whether a CONFIG page holds the shipped block, verbatim, inside a space-lua fence. */
 export function hasTransform(configSource: string): boolean {
@@ -138,7 +142,7 @@ export class Scanner {
           s.unguardedReason = `the scan failed: ${(e as Error).message}`;
         }
         if (!s.guarded) summary.unguarded.push(space);
-        if (s.guarded && s.transform !== "present") summary.missingTransform.push(space);
+        if (s.guarded && s.transform !== "present" && s.transform !== "not-needed") summary.missingTransform.push(space);
         summary.findings += s.findings.length;
         summary.files += s.files.length;
       }
@@ -169,13 +173,20 @@ export class Scanner {
     s.guarded = true;
     s.unguardedReason = null;
 
-    // The transform in CONFIG.
-    try {
-      const cfg = await sb.read(token, space, "CONFIG.md");
-      s.transform = hasTransform(cfg.body.toString("utf8")) ? "present" : "missing";
-    } catch (e) {
-      if (e instanceof SbError && e.status === 404) s.transform = "missing";
-      else throw e;
+    // The transform in CONFIG. SilverBullet 3 loads code from Library/ only and needs none. A release
+    // that cannot be told is taken for 2, and there only CONFIG counts: 2 does not run Library/Config
+    // before the initial index, so a block there (as a downgrade leaves it) comes too late.
+    s.release = await sb.version(token, space);
+    s.libraryOnly = (majorOf(s.release) ?? 0) >= LIBRARY_ONLY_SINCE;
+    if (s.libraryOnly) s.transform = "not-needed";
+    else {
+      try {
+        const cfg = await sb.read(token, space, "CONFIG.md");
+        s.transform = hasTransform(cfg.body.toString("utf8")) ? "present" : "missing";
+      } catch (e) {
+        if (e instanceof SbError && e.status === 404) s.transform = "missing";
+        else throw e;
+      }
     }
 
     // The review library, for the proposal tools; a page that cannot be read refuses them only.
@@ -187,7 +198,7 @@ export class Scanner {
       else s.library = { version: null, format: null, problem: `the library page ${LIBRARY_PAGE} cannot be read: ${(e as Error).message}` };
     }
 
-    // Pages outside CONFIG and Library/, and files that are not pages.
+    // Pages outside the code places, and files that are not pages.
     const allow = this.d.allowlist();
     const files = await sb.list(token, space);
     const findings: Finding[] = [];
@@ -196,9 +207,10 @@ export class Scanner {
     const allowed = this.d.allowedFiles().filter((a) => a.space === space || a.space === "*");
     let pagesChecked = 0;
     const reportFile = `${config.reportPage}.md`;
+    const names = files.map((f) => pageNameOf(f.name));
     for (const f of files) {
       const page = pageNameOf(f.name);
-      if (isCodePlace(page)) continue;
+      if (isCodePlace(page, s.libraryOnly)) continue;
       if (!f.name.endsWith(".md")) {
         if (!allowed.some((a) => pathMatches(a.path, f.name))) nonPages.push({ file: f.name, contentType: f.contentType, size: f.size });
         continue;
@@ -208,7 +220,7 @@ export class Scanner {
       pagesChecked++;
       const read = await sb.read(token, space, f.name);
       const source = read.body.toString("utf8");
-      const transclusion = this.transclusionCheck(space, page);
+      const transclusion = this.transclusionCheck(space, page, names);
       let verdict: Verdict;
       try {
         verdict = await checkPageLimited(source, allow, transclusion);
@@ -252,15 +264,18 @@ export class Scanner {
    * The scan has no writer to ask about: a transclusion is a finding when a user who may render
    * the page (`x`) may not read its target (`r`), whoever wrote the page (docs/security.md, section 7).
    */
-  private transclusionCheck(space: string, page: string): TransclusionCheck | undefined {
+  private transclusionCheck(space: string, page: string, names: readonly string[]): TransclusionCheck | undefined {
     const acl = this.d.accessList?.();
     const subjects = this.d.subjects?.() ?? [];
     if (!acl) return undefined;
     return {
       page,
       denied(target) {
-        const who = renderersWithoutRead(acl, subjects, space, page, target);
-        return who.length ? `${who.join(", ")} may render this page (x) and may not read ${target}` : null;
+        for (const name of resolutions(target, names)) {
+          const who = renderersWithoutRead(acl, subjects, space, page, name);
+          if (who.length) return `${who.join(", ")} may render this page (x) and may not read ${name}`;
+        }
+        return null;
       },
     };
   }
@@ -348,7 +363,8 @@ export function renderReport(space: string, s: SpaceState, state: State, config:
   lines.push(`* Space: \`${space}\``);
   lines.push(`* Serving: ${refusal ? `**no**. ${cell(refusal)}` : "yes"}`);
   lines.push(`* Rendering: ${block ? `**blocked**. ${cell(block)}` : "available where the access list grants x"}`);
-  lines.push(`* Transform block in CONFIG: ${s.transform === "present" ? "present" : "**missing**"}`);
+  lines.push(`* SilverBullet: ${s.release ? cell(s.release) : "release not named"}`);
+  lines.push(`* Transform block in CONFIG: ${s.transform === "present" ? "present" : s.transform === "not-needed" ? "not needed (SilverBullet 3 loads code from Library/ only)" : "**missing**"}`);
   lines.push(`* Proposals library: ${s.library.problem ? `**proposal tools unavailable**: ${cell(s.library.problem)}` : `version ${s.library.version}, proposal tools available`}`);
   lines.push(`* Allowlist: ${state.allowlist.ok ? "valid" : `**invalid**: ${cell(state.allowlist.problems.join("; "))}`}`);
   lines.push(`* Last scan: ${s.lastScan?.toISOString() ?? "never"}, ${s.scanMs} ms, ${s.pagesChecked} page(s) checked, ${fileCount} file(s) seen`);
@@ -359,7 +375,7 @@ export function renderReport(space: string, s: SpaceState, state: State, config:
     lines.push("| Page | Line | Rule | Detail |", "|---|---|---|---|");
     for (const f of s.findings) lines.push(`| ${pageRef(f.page)} | ${f.line} | ${cell(f.rule)} | ${cell(f.detail)} |`);
   } else if (!state.allowlist.ok) lines.push("Pages were not checked: the allowlist is invalid, and the server refuses to serve.");
-  else lines.push("None: every page outside CONFIG and Library/ is data, and none transcludes what a user who may render it may not read.");
+  else lines.push(`None: every page outside ${codePlaces(s.libraryOnly)} is data, and none transcludes what a user who may render it may not read.`);
   lines.push("");
   if (s.quarantined.length) {
     lines.push(`## Quarantined in this run (${s.quarantined.length})`, "");

@@ -17,6 +17,7 @@
 # - wins, otherwise rights add up.
 
 @agents     notes   /               r
+@agents     notes   Library/Config  -
 @agents     notes   CONFIG          -
 @agents     notes   SETTINGS        -
 @agents     notes   Library/        -

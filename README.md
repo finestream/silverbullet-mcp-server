@@ -19,11 +19,11 @@ It replaces a set-up of one single-user MCP server per user per space, called v1
 
 ## The security challenge
 
-SilverBullet runs code from content: every Space Lua block and every `${…}` expression on any page runs in the browser of the person who opens the page, with that person's rights. An agent that can write one page can plant code that reads or writes everything, and a path-based access list does not close this: it decides where an agent may write, not what the written page may do. The server therefore keeps code out of the pages agents write and confines it to `Library/`, with configuration in `CONFIG`; the full model, and the terms *user*, *person*, *agent* and *operator* as these documents use them, are in [docs/security.md](docs/security.md).
+SilverBullet runs code from content: every Space Lua block and every `${…}` expression on any page runs in the browser of the person who opens the page, with that person's rights. An agent that can write one page can plant code that reads or writes everything, and a path-based access list does not close this: it decides where an agent may write, not what the written page may do. The server therefore keeps code out of the pages agents write and confines it to `Library/`, with configuration in `CONFIG` (`Library/Config` on SilverBullet 3); the full model, and the terms *user*, *person*, *agent* and *operator* as these documents use them, are in [docs/security.md](docs/security.md).
 
 ## Posture
 
-The server ships strict: a deny-by-default access list, a write filter on every write with an allowlist of the functions a page may call, a scan of the space in report-only mode, an index-time transform in `CONFIG` that keeps blocks outside `CONFIG` and `Library/` from loading, a refusal to serve while any of these is missing, and no rendering in a space where the scan has findings. Every part but the last two can be relaxed (write access to `Library/`, more allowlist entries, more file types, scan off or in quarantine mode), and the server reports a relaxed setting once at start, in its log and on its report page in the space ([docs/security.md](docs/security.md), section 11). The rules, the defaults that enforce them, and what relaxing each one accepts are in [docs/space-guidelines.md](docs/space-guidelines.md); how the controls work is in [docs/security.md](docs/security.md).
+The server ships strict: a deny-by-default access list, a write filter on every write with an allowlist of the functions a page may call, a scan of the space in report-only mode, an index-time transform in `CONFIG` (SilverBullet 2; 3 needs none) that keeps blocks outside `CONFIG` and `Library/` from loading, a refusal to serve while any of these is missing, and no rendering in a space where the scan has findings. Every part but the last two can be relaxed (write access to `Library/`, more allowlist entries, more file types, scan off or in quarantine mode), and the server reports a relaxed setting once at start, in its log and on its report page in the space ([docs/security.md](docs/security.md), section 11). The rules, the defaults that enforce them, and what relaxing each one accepts are in [docs/space-guidelines.md](docs/space-guidelines.md); how the controls work is in [docs/security.md](docs/security.md).
 
 ## Status
 
@@ -39,7 +39,7 @@ The server in `src/` serves the thirteen tools below as the authenticated user, 
 | [`docs/security.md`](docs/security.md) | Security model: threat model, access list, write filter, allowlist, scan, index-time transform, defaults |
 | [`docs/space-guidelines.md`](docs/space-guidelines.md) | Conventions a space follows when this server guards it |
 | [`docs/proposals.md`](docs/proposals.md) | Design of change proposals: tools with which an agent proposes a change to a page it may not write, and the library with which a person reviews and applies it |
-| [`docs/facts/`](docs/facts) | Measured behaviour of SilverBullet 2.12.1 that the security model rests on |
+| [`docs/facts/`](docs/facts) | Measured behaviour of SilverBullet 2.12.1 and 3.0.0 that the security model rests on |
 | [`src/`](src) | The server: `main.ts` (entry, `--scan`, `--hash`), `config.ts` (the environment, the watched configuration files), `server.ts` (HTTP, auth), `oauth.ts` and `cf-access.ts` (the two verifiers, sharing `jwt.ts`), `tools.ts` (the tools), `sb.ts` (SilverBullet's file, configuration and Runtime APIs), `filter/` (the write filter on the vendored parser, its worker, the allowlist), `access.ts`, `credentials.ts`, `scan.ts` (the scan and the report page), `state.ts` (the refuse-to-serve and render-block state), `render.ts` (the render path over the Runtime API, the render check), `edit.ts`, `match.ts` (user regexes in a worker), `log.ts`; unit tests beside the code |
 | [`library/`](library) | The *Proposals* library: `Proposals.md` is the page to install as `Library/Finestream/Proposals`, from the Library Manager (the repository index of [finestream/silverbullet-libraries](https://github.com/finestream/silverbullet-libraries) links to it, so *Library: Update* takes a new version), built from `library/src/` by `npm run build:library` (CI checks that it is up to date); its documentation and configuration are on that page |
 | [`config/`](config) | The shipped allowlist and examples of the credentials file, the access list and the allowed-files list |
@@ -50,7 +50,7 @@ The server in `src/` serves the thirteen tools below as the authenticated user, 
 
 ## Run
 
-Needs Node.js 24 or newer (it runs the `.ts` files directly) and a SilverBullet instance in multi-space mode, 2.12 or newer.
+Needs Node.js 24 or newer (it runs the `.ts` files directly) and a SilverBullet instance in multi-space mode, 2.12 or 3.0 (tested on 2.12.1 and 3.0.0).
 
 ```sh
 npm install
@@ -102,7 +102,7 @@ In Claude on the web, desktop and mobile: *Settings → Connectors → Add custo
 ```sh
 npm ci
 MCP_URL=https://mcp.example.org/mcp MCP_BEARER=… MCP_RAW_PAGE="A page with queries" MCP_SCREENSHOT_PAGE=index \
-  MCP_WRITE_AREA="Shared/Bot/" MCP_DENIED_PAGE=CONFIG MCP_DENIED_TEXT="config.set" MCP_EXPECT_RENDER=no node scripts/acceptance.ts
+  MCP_WRITE_AREA="Shared/Bot/" MCP_DENIED_PAGE=Library/Config MCP_DENIED_TEXT="config.set" MCP_EXPECT_RENDER=no node scripts/acceptance.ts
 ```
 
 `MCP_SPACE` selects a space other than the user's default; `MCP_OUTSIDE_PAGE` (default `Acceptance outside`) names a page the user may not create; `MCP_REPORT_PAGE` defaults to `MCP Server` and may be a path, like the server's setting of the same name. Exit code 0 when every check passed, 1 otherwise, 2 when the test could not run.

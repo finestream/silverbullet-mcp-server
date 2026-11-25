@@ -4,7 +4,7 @@ tags: meta/library
 author: finestream
 description: "Review change proposals made through the SilverBullet MCP server: a list, a diff per proposal, and Apply, Edit and Reject with your own rights."
 pageDecoration.prefix: "📝 "
-version: "0.9.0"
+version: "0.10.0"
 proposalFormat: 1
 ---
 > **note**
@@ -33,7 +33,7 @@ Pages call `proposals.list()` only, so a space that restricts what pages may cal
 
 ## Configuration
 
-Configuration is optional. To change the defaults, add the following section to your `CONFIG` page in a space-lua block:
+Configuration is optional. To change the defaults, add the following section to your configuration page (`Library/Config`; `CONFIG` on SilverBullet 2) in a space-lua block:
 
 ```lua
 config.set {
@@ -95,14 +95,14 @@ The first lists every open proposal, the second only those for one page (put it 
 -----------------------------------------------------------------------
 proposals = proposals or {}
 
-proposals.version = "0.9.0"
+proposals.version = "0.10.0"
 proposals.format = 1
 proposals.tag = "change-proposal"
 
 -----------------------------------------------------------------------
 -- proposals.defaults
 --
--- Fallback values for the "proposals" section of the CONFIG page.
+-- Fallback values for the "proposals" section of the configuration page.
 -----------------------------------------------------------------------
 proposals.defaults = {
 	deleteClosed = true,                     -- delete a proposal page once it is applied or rejected
@@ -114,7 +114,7 @@ proposals.defaults = {
 -----------------------------------------------------------------------
 -- proposals.config()
 --
--- Reads the "proposals" section of the CONFIG page.
+-- Reads the "proposals" section of the configuration page.
 --
 -- Returns:
 --   Table with the configured values, and the defaults for every key

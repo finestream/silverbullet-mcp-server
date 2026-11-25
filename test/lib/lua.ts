@@ -18,7 +18,7 @@ export const AWAIT_INDEX = `if index.awaitPendingChanges then index.awaitPending
 /**
  * The render script of the design: expand `${…}`, queries, templates and
  * transclusions of one page, with `_CTX` set by hand (2.12.1 sets none inside
- * markdown.expandMarkdown) and the writing functions of `space` shadowed for
+ * markdown.expandMarkdown) and by `pageName` (3.0; ignored before) and the writing functions of `space` shadowed for
  * the duration of the call (best-effort; see the bypass check).
  */
 export function renderScript(page: string): string {
@@ -31,7 +31,7 @@ for _, f in ipairs({"writePage", "deletePage", "writeFile", "deleteFile", "write
   space[f] = blocked
 end
 _CTX = {currentPage = index.getObjectByRef(name, "page", name) or space.getPageMeta(name)}
-local ok, result = pcall(function() return markdown.expandMarkdown(space.readPage(name)) end)
+local ok, result = pcall(function() return markdown.expandMarkdown(space.readPage(name), {pageName = name}) end)
 _CTX = nil
 for f, fn in pairs(saved) do space[f] = fn end
 if not ok then error(result) end

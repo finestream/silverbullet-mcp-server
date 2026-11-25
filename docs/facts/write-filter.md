@@ -93,6 +93,14 @@ What the minimal list shows: pages of a typical space need `index.*` (every quer
 
 **Answer.** 6.9 ms per 50 KB page (median of 50 runs; min 6.6, max 9.1), of which 3.4 ms is the Markdown parse. The page: 1 837 lines, 306 `${` occurrences, 204 checked directives (the rest sit in code spans and blocks), tables, lists, a `lua` fence. Sequential estimate for 3 000 such pages: 21 s; real pages are smaller and carry few directives, so a scan of a few thousand pages is seconds, not minutes. The release check `06-cost` takes the measurement on every run (Apple silicon, Node 26). No measurement of memory.
 
+## 6. Where a directive ends
+
+SilverBullet's inline parser gets the text of one block and looks for the end of a `${` there. 2.12.1 counts braces, whatever they stand in. 3.0.0 does not count braces in Lua strings, long brackets and comments, and falls back to counting all of them when the body does not scan as Lua (`client/space_lua/directive_scan.ts`); in a table cell `\|` stands for `|`.
+
+So the two releases may end a directive in different places, and one may see a directive where the other sees text. And a directive as the filter finds it in the whole page may be text to SilverBullet, because the end lies in another block, with other directives inside. The filter therefore checks every `${` outside code on its own, also one inside another directive, with the end each release would take in the whole page. An end SilverBullet finds within the block is one of the two: both scans read from the left and see the same text up to it. `test/checks/12-directives.test.ts` asserts, per release, that the filter judges the forms it evaluates.
+
+The Lua grammar and parser are the same files in both releases (`lua.grammar`, `parse-lua.js`).
+
 ## Open points and surprises
 
 * The `FuncBody` rule is what catches `using function … end` in `order by`; a rule on `FunctionDef` alone would have missed it.

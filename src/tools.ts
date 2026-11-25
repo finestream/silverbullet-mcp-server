@@ -16,7 +16,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { AccessList, Right, Rights, Subject } from "./access.ts";
 import { pageNameOf, renderersWithoutRead, rightsText, rowRules } from "./access.ts";
 import type { Allowlist } from "./filter/allowlist.ts";
-import { describe, isCodePlace, TRANSCLUSION_RULE, type Verdict } from "./filter/filter.ts";
+import { codePlaces, describe, isCodePlace, resolutions, TRANSCLUSION_RULE, type Verdict } from "./filter/filter.ts";
 import { checkPageLimited, CheckTimeout } from "./filter/check.ts";
 import type { Credential } from "./credentials.ts";
 import { diffOf, prepareEdits, type Edit } from "./edit.ts";
@@ -28,7 +28,7 @@ import { NEVER_WRITTEN_TYPES, type Config } from "./config.ts";
 import type { Log } from "./log.ts";
 import { matchAll, MatchTimeout, type MatchItem } from "./match.ts";
 
-/** A revision as the tools show it: SilverBullet's ETag without its quotation marks (`sha256:<hex>`); a weak ETag is left as it is. */
+/** A revision as the tools show it: SilverBullet's content revision, an ETag, without its quotation marks (`sha256:<hex>`); a weak ETag is left as it is. */
 export const revisionOf = (etag: string | null): string | null => (etag === null || etag.startsWith("W/") ? etag : etag.replace(/^"(.*)"$/, "$1"));
 
 /** Whether a revision a caller gave, with or without the quotation marks, is the strong ETag the file is at. */
@@ -233,16 +233,22 @@ export function registerTools(server: McpServer, ctx: Context) {
    * check runs in a worker with a time limit; a page it cannot decide in time is refused too.
    */
   const checkContent = async (space: string, file: string, content: string, outcome = "Nothing was written.") => {
-    if (!file.toLowerCase().endsWith(".md") || isCodePlace(pageNameOf(file))) return;
+    if (!file.toLowerCase().endsWith(".md") || isCodePlace(pageNameOf(file), state.libraryOnly(space))) return;
     const page = pageNameOf(file);
+    // SilverBullet 3 resolves a transclusion by path suffix and in any case, so its target is looked up among the files.
+    const names = content.includes("![") ? (await listing(space)).map((f) => pageNameOf(f.name)) : [];
     let verdict: Verdict;
     try {
       verdict = await checkPageLimited(content, allow, {
         page,
         denied(target) {
-          if (!rightsOn(space, target).has("r")) return `user "${user.user}" has no "r" on ${space}/${target}`;
-          // Other users are not named to the writer; the report page names them to the operator.
-          if (renderersWithoutRead(acl, subjects, space, page, target).length) return `a user who may render this page ("x") has no "r" on ${space}/${target}`;
+          for (const name of resolutions(target, names)) {
+            // A page the user may not read is absent from their listings: only the name they wrote is named to them.
+            const what = name === target ? `${space}/${target}` : `a page that ${target} may resolve to`;
+            if (!rightsOn(space, name).has("r")) return `user "${user.user}" has no "r" on ${what}`;
+            // Other users are not named to the writer; the report page names them to the operator.
+            if (renderersWithoutRead(acl, subjects, space, page, name).length) return `a user who may render this page ("x") has no "r" on ${what}`;
+          }
           return null;
         },
       });
@@ -259,7 +265,7 @@ export function registerTools(server: McpServer, ctx: Context) {
     const rules: string[] = [];
     if (code.length) rules.push("no code fences, no function definitions or assignments, calls only to allowed functions");
     if (transclusions.length) rules.push("no transclusion of a page or file that the writer, or a user who may render the page, may not read");
-    throw new Refusal("write-filter", `Refused by the write filter: ${parts.join("; and ")}. ${outcome} Pages outside CONFIG and Library/ are data: ${rules.join("; ")} (docs/security.md, section 5).`);
+    throw new Refusal("write-filter", `Refused by the write filter: ${parts.join("; and ")}. ${outcome} Pages outside ${codePlaces(state.libraryOnly(space))} are data: ${rules.join("; ")} (docs/security.md, section 5).`);
   };
 
   /** After a write or delete through the server: the listing is stale, the page's findings go, and a render waits for the index to hold the change. */
@@ -555,7 +561,7 @@ export function registerTools(server: McpServer, ctx: Context) {
     "create-note",
     {
       title: "Create note",
-      description: "Create a page (or, where allowed, another file). Pages outside CONFIG and Library/ must hold no code and transclude nothing their reader may not read: the write filter refuses them otherwise.",
+      description: "Create a page (or, where allowed, another file). Pages outside Library/ (and CONFIG on SilverBullet 2) must hold no code and transclude nothing their reader may not read: the write filter refuses them otherwise.",
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       inputSchema: {
         space,

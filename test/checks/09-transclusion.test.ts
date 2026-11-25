@@ -5,8 +5,8 @@
 
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
-import { sb, T, S } from "../lib/env.ts";
-import { checkPage } from "../../src/filter/filter.ts";
+import { sb, T, S, V3 } from "../lib/env.ts";
+import { checkPage, resolutions } from "../../src/filter/filter.ts";
 import { shippedAllowlist } from "../../src/filter/allowlist.ts";
 
 const TARGET = "Transcluded/Deep";
@@ -28,8 +28,12 @@ const expand = async (markdown: string) => {
   return String(r.result ?? r.error ?? r.raw);
 };
 
+/** The files of the space, as the server looks a target up among them. */
+const NAMES = ["index", "Projects/One", TARGET, "Transcluded/note.txt", "Transcluded/Shown"];
+/** Forms only SilverBullet 3 expands: a target in another case, and one named by the end of its path. */
+const LOOSE = [`![[${TARGET.toLowerCase()}]]`, "![[Deep]]", "![[deep]]", "![[/Deep]]", "![[^Deep]]", "![[Deep.md]]", "![[Deep#Part]]"];
 /** The filter as a reader who may not read the target sees the page. */
-const refused = (markdown: string) => !checkPage(markdown, shippedAllowlist(), { page: "Notes/Page", denied: (t) => (t.startsWith("Transcluded/") ? "no r" : null) }).ok;
+const refused = (markdown: string) => !checkPage(markdown, shippedAllowlist(), { page: "Notes/Page", denied: (t) => (resolutions(t, NAMES).some((n) => n.startsWith("Transcluded/")) ? "no r" : null) }).ok;
 
 const EXPANDED = [
   `![[${TARGET}]]`,
@@ -59,14 +63,14 @@ const NOT_EXPANDED = [
   `[[${TARGET}]]`,
   `!\\[[${TARGET}]]`,
   `! [[${TARGET}]]`,
-  `![[${TARGET.toLowerCase()}]]`,
-  `![[Deep]]`,
   `![[Transcluded/note.txt]]`,
+  "![[eep]]",
+  ...(V3 ? [] : LOOSE),
 ];
 
 test("transclusion: every form SilverBullet expands is one the write filter refuses for a reader without r on the target", async () => {
   const leaks: string[] = [];
-  for (const form of EXPANDED) {
+  for (const form of [...EXPANDED, ...(V3 ? LOOSE : [])]) {
     const out = await expand(form);
     assert.ok(out.includes(MARKER), `expected to expand: ${form} -> ${out.slice(0, 80)}`);
     if (!refused(form)) leaks.push(form);
@@ -74,17 +78,17 @@ test("transclusion: every form SilverBullet expands is one the write filter refu
   assert.deepEqual(leaks, [], "expanded by SilverBullet and accepted by the filter");
 });
 
-test("transclusion: code spans, code blocks, links, escapes, another case and a bare last segment are not expanded; a file that is not a page is not expanded as text", async () => {
+test("transclusion: code spans, code blocks, links, escapes and (before 3.0) another case and a bare last segment are not expanded; a file that is not a page is not expanded as text", async () => {
   for (const form of NOT_EXPANDED) {
     const out = await expand(form);
     assert.ok(!out.includes(MARKER), `expected to stay: ${form} -> ${out.slice(0, 80)}`);
   }
 });
 
-test("[watch] transclusion: a transclusion that an expression returns as a string is not expanded by markdown.expandMarkdown (the editor does expand it, which the filter cannot see)", async () => {
+test("transclusion: a transclusion that an expression returns as a string is expanded by markdown.expandMarkdown since 3.0 and left as text before (the editor expands it in both; the filter cannot see it, the render check does)", async () => {
   const out = await expand(`\${"![[${TARGET}]]"}`);
-  assert.ok(!out.includes(MARKER), out.slice(0, 120));
-  assert.ok(out.includes(`![[${TARGET}]]`));
+  assert.equal(out.includes(MARKER), V3, out.slice(0, 120));
+  assert.equal(out.includes(`![[${TARGET}]]`), !V3, out.slice(0, 120));
 });
 
 // What the render check of docs/security.md, section 12, rests on: the headless client reads

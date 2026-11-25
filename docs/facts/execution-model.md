@@ -81,6 +81,19 @@ What exists on the client side, none of it enforced: `?disableSpaceLua=1` and `?
 
 Roadmap: nothing in the repository (`CHANGELOG.md` *Edge*: "Nothing yet"; ADRs 001–011 hold no permission model).
 
+## 8. What is different in 3.0.0
+
+* **Where code loads from.** The client fetches `/<space>/.tooling`, the text of every page under `Library/` in one response (`server/src/handlers/tooling.rs`; the browser builds the same from its synced copy, `client/service_worker/tooling_payload.ts`), collects the fences (`client/tooling.ts`) and runs them (`client/space_lua.ts`); the index is not read for it. The prefix is compared exactly: `library/`, `LIBRARY/`, `A/Library/` and the page `Library` are not in it. The `space-lua` and `space-style` indexers skip every other page (`plugs/index/space_lua.ts`, `space_style.ts`), so no such object exists outside `Library/`.
+* **Before anything else** run the blocks of `Library/Config` and the blocks of Library pages with a line `-- boot: true` (`plug-api/lib/library_pages.ts`), in the same contained environment `CONFIG` had (section 1).
+* **Measured** (`test/checks/04-index.test.ts`, `07-browser.test.ts`), without any transform in the configuration: pages with a `space-lua` block (priority 100) and a `space-style` block in the root, tagged `meta`, with `-- boot: true`, named `CONFIG` beside `Library/Config`, under `library/`, `LIBRARY/` and `Planted/Library/`, and the page `Library` itself. None ran and none was indexed or applied after the incremental index, `system.loadScripts()`, `system.reboot()`, `index.reindexSpace()`, on a fresh headless runtime, at a fresh browser boot, when the page was written with the browser open, after `loadLuaScripts()` there and at the next boot from the synced copy. A block under `Library/` loaded at the next reload (control).
+* **`CONFIG` becomes `Library/Config`** when a space starts and only the former exists; with both, nothing is moved and only `Library/Config` is loaded; a symbolic link, or a space whose ignore rules cover the target, is left alone (`server-common/src/space/config_migration.rs`).
+* **Scripts load into a fresh environment** that takes over once all have run, so a render never meets a half-loaded one.
+* **`${…}`** also takes an assignment, `${name = expr}` or `${local name = expr}`: page variables, defined by the page's stored text. Where a directive ends has changed: [write-filter.md](write-filter.md), section 6.
+* **Unchanged**: `*.plug.js` files load from anywhere (`client/space.ts`), `.html` is served inline, `.lua` runs through `dofile` only, `space-config` and a fence in an HTML comment are inert.
+* **File API:** a read's `ETag` is `sha256-typed:<hash>`, which `If-Match` refuses; the content revision that writes are conditioned on, `sha256:<hash>`, is in `X-SilverBullet-Revision`, as on 2.12.1 (`server/src/handlers/fs.rs`).
+* **Transclusions** resolve like links: an exact path first, otherwise the files whose path ends in the target, in any case (`plug-api/lib/resolve_path.ts`).
+* **Index:** `index.libraryPages` (`index.metaPages` is an alias) and `index.data`; `index.contentPages` drops every Library page, `Library/Config` among them; headers and table rows carry `itags`.
+
 ## Open points and surprises
 
 * `.html` files served inline on the space origin without CSP (section 3): a second door next to Lua, worth raising upstream.

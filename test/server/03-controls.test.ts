@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startServer, connect, BEARERS, DEFAULT_ACCESS_LIST, credentialsFile, unique, type RunningServer, type McpClient } from "./harness.ts";
-import { sb, T, SB_URL } from "../lib/env.ts";
+import { sb, T, SB_URL, CONFIG_PAGE, ONLY_2, ONLY_3 } from "../lib/env.ts";
 import { configPage } from "../lib/transform.ts";
 import { SHIPPED_ALLOWLIST, compileAllowlist } from "../../src/filter/allowlist.ts";
 import { checkPage } from "../../src/filter/filter.ts";
@@ -20,8 +20,8 @@ const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const BETA_ACCESS = DEFAULT_ACCESS_LIST + "bob beta / rw\n";
 
 after(async () => {
-  // Whatever a test left behind: beta's CONFIG with the shipped transform.
-  await sb.write(T.admin, "beta", "CONFIG.md", configPage("shipped"));
+  // Whatever a test left behind: beta's configuration with the shipped transform.
+  await sb.write(T.admin, "beta", `${CONFIG_PAGE}.md`, configPage("shipped"));
 });
 
 test("refuse to serve: an allowlist entry that covers a never-allowed name refuses every tool but list-spaces; /healthz says so", async () => {
@@ -42,7 +42,7 @@ test("refuse to serve: an allowlist entry that covers a never-allowed name refus
   }
 });
 
-test("refuse to serve: a space whose CONFIG lacks the transform is refused; the other space is served; a fix is seen on SIGHUP", async () => {
+test("refuse to serve: a space whose CONFIG lacks the transform is refused; the other space is served; a fix is seen on SIGHUP", { skip: ONLY_2 }, async () => {
   await sb.write(T.admin, "beta", "CONFIG.md", configPage("none"));
   const server = await startServer({ accessList: BETA_ACCESS });
   const bob = await connect(server.url, BEARERS.bob);
@@ -57,6 +57,31 @@ test("refuse to serve: a space whose CONFIG lacks the transform is refused; the 
     const again = await bob.call("read-note", { filename: "Secret" });
     assert.equal(again.isError, false, again.text);
   } finally {
+    await bob.close();
+    await server.stop();
+  }
+});
+
+test("SilverBullet 3: a space without the transform is served; the report names the release; CONFIG is a page like any other, so code on it is a finding and an agent's write to it is filtered", { skip: ONLY_3 }, async () => {
+  await sb.write(T.admin, "beta", `${CONFIG_PAGE}.md`, configPage("none"));
+  const server = await startServer({ accessList: BETA_ACCESS + "bob beta CONFIG rwd\n" });
+  const bob = await connect(server.url, BEARERS.bob);
+  try {
+    const r = await bob.call("read-note", { filename: "Secret" });
+    assert.equal(r.isError, false, r.text);
+    const report = (await sb.read(T.admin, "beta", "MCP Server.md")).text;
+    assert.match(report, /\* SilverBullet: `3\.\d+\.\d+/);
+    assert.match(report, /\* Transform block in CONFIG: not needed/);
+    assert.match(report, /## Findings \(0\)/);
+    const refused = await bob.call("create-note", { filename: "CONFIG", content: "```space-lua\nx = 1\n```\n" });
+    assert.match(refused.text, /^Refused by the write filter: the page would hold code \(line 1, fence: ```space-lua block\)\. Nothing was written\. Pages outside Library\/ are data/);
+    await sb.write(T.admin, "beta", "CONFIG.md", configPage("shipped"));
+    await server.rescan();
+    const found = (await sb.read(T.admin, "beta", "MCP Server.md")).text;
+    assert.match(found, /## Findings \(1\)/);
+    assert.match(found, /\| \[\[CONFIG\]\] \| \d+ \| `fence` \|/);
+  } finally {
+    await sb.remove(T.admin, "beta", "CONFIG.md");
     await bob.close();
     await server.stop();
   }
@@ -216,15 +241,15 @@ test("CLI scan: `--scan` reports per space and exits 1 with findings; quarantine
   try {
     const report = run({ MCP_SPACES: "alpha,beta" });
     assert.equal(report.code, 1);
-    assert.match(report.err, /- alpha: guarded, transform present, \d+ finding\(s\), 1 non-page file\(s\)/);
-    assert.match(report.err, /- beta: guarded, transform present, 2 finding\(s\)/);
+    assert.match(report.err, /- alpha: guarded, transform (present|not-needed), \d+ finding\(s\), 1 non-page file\(s\)/);
+    assert.match(report.err, /- beta: guarded, transform (present|not-needed), 2 finding\(s\)/);
     assert.match(report.err, new RegExp(`${planted}:3 fence`));
 
     // Limited to beta: alpha's seed pages hold code on purpose and must stay as they are.
     const q = run({ MCP_SCAN_MODE: "quarantine", MCP_SPACES: "beta" });
     assert.equal(q.code, 0, q.err);
     assert.match(q.err, /^Scan of 1 space\(s\)/);
-    assert.match(q.err, /- beta: guarded, transform present, 0 finding\(s\)/);
+    assert.match(q.err, /- beta: guarded, transform (present|not-needed), 0 finding\(s\)/);
     const after = (await sb.read(T.admin, "beta", `${planted}.md`)).text;
     assert.equal(after, 'Text ${1 + 1}\n\n```lua\nfunction q() end\n```\n\nLeak: `${space.readPage("CONFIG")}` and a `tick`.\n\n#quarantined\n');
   } finally {

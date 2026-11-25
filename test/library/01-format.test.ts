@@ -73,9 +73,9 @@ return (proposals.applyEdits(${luaString(text)}, edits))`);
 test("library: a revision is the one the file API reports as the ETag", async () => {
   const text = "---\ntitle: x\n---\nGrüsse ✓\n";
   await writePage("Revision probe", text);
-  const etag = (await sb.read(T.dora, S.delta, "Revision probe.md")).etag;
+  const revision = (await sb.read(T.dora, S.delta, "Revision probe.md")).headers.get("x-silverbullet-revision");
   const mine = await lua<string>(`return proposals.revisionOf(${luaString(text)})`);
-  assert.equal(`"${mine}"`, etag);
+  assert.equal(`"${mine}"`, revision);
   assert.equal(mine, await revisionOf(text));
   await removePage("Revision probe");
 });

@@ -4,7 +4,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sb, T, S } from "../lib/env.ts";
+import { sb, T, S, V3 } from "../lib/env.ts";
 import { luaString, renderScript } from "../lib/lua.ts";
 
 test("runtime: a fresh runtime boots on the first call (reset through the admin API; cold start measured)", async (t) => {
@@ -34,7 +34,7 @@ test("[watch] render: _CTX is not set inside markdown.expandMarkdown (the render
   assert.ok(!String(r.result).includes("Page: Rendered"), `_CTX is now set: ${r.result}`);
 });
 
-test("[watch] render: expandMarkdown(text, {pageName}) is not available (the edge release adds it; the shim then goes)", async () => {
+test("render: expandMarkdown(text, {pageName}) sets _CTX.currentPage on 3.0 and is ignored before (the render script tries it first and sets the shim otherwise)", async () => {
   const r = await sb.lua(
     T.alice,
     S.alpha,
@@ -42,7 +42,7 @@ test("[watch] render: expandMarkdown(text, {pageName}) is not available (the edg
 return {ok = ok, res = tostring(res)}`,
   );
   const { res } = r.result as { ok: boolean; res: string };
-  assert.ok(!res.includes("Page: Rendered"), `the pageName option works now: ${res}`);
+  assert.equal(res.includes("Page: Rendered"), V3, res);
 });
 
 test("[watch] render: query results come back as HTML tables, not Markdown tables", async () => {
@@ -89,9 +89,9 @@ test("screenshot: navigate, then capture; ?selector= clips to an element", async
   assert.ok(clipped.size && clipped.size.height <= full.size!.height, "the clipped image is no taller than the viewport");
 });
 
-test("[watch] screenshot: ?fullPage=1 is ignored (same image as the viewport)", async () => {
+test("screenshot: ?fullPage=1 is ignored on SilverBullet 2 (same image as the viewport) and captures the page on 3.0", async () => {
   const full = await sb.screenshot(T.alice, S.alpha);
   const fullPage = await sb.screenshot(T.alice, S.alpha, "?fullPage=1");
   assert.equal(fullPage.status, 200);
-  assert.deepEqual(fullPage.size, full.size, "fullPage now changes the image; the screenshot tool can offer it");
+  assert.equal(JSON.stringify(fullPage.size) !== JSON.stringify(full.size), V3, `viewport ${JSON.stringify(full.size)}, fullPage ${JSON.stringify(fullPage.size)}`);
 });
