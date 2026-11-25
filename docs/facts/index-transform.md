@@ -76,6 +76,12 @@ Evidence, test P2 (variant A extended to drop `CONFIG@…` as well, keeping `Lib
 
 Order on a reload after an incremental index: the index write (with transform) completes before `loadLuaScripts` queries the index; there is no path where an object is loaded first and transformed later (`space_lua.ts:60-75` reads only stored objects).
 
+## 5. What is different in 3.0.0
+
+The transform is not needed ([execution-model.md](execution-model.md), section 8): nothing is loaded from the index, and no block outside `Library/` gets into it. The shipped block in `Library/Config` does no harm (it keeps the objects of `Library/`, and there are no others). `tag.define` merges repeated definitions (`config.merge`), so another definition of the tag `space-lua` no longer drops the transform.
+
+On 2.12.1 a transform in `Library/Config` instead of `CONFIG` is not in place for the initial index of a fresh client: the outside script ran (`test/checks/04-index.test.ts`). A space that went back from 3.0 to 2.12 is in that state until the page is moved back to `CONFIG`.
+
 ## Open points and surprises
 
 * The headless runtime client did not index externally written pages in the tests of this page (P4-a, P4-h, P4-c with API and disk writes: never within 20–30 s), although the server's `/.events` stream delivered the change events; the browser client indexed the same kind of write in 0.5 s, and the runtime in the tests of [execution-model.md](execution-model.md) (section 4) did in 0.6 s. Not explained; it affects the render path (a fresh runtime indexes everything at boot; a long-lived one may lag), which is why a render after a write waits for the index and falls back to a reboot ([security.md](../security.md), section 12). The release checks in `test/` did not reproduce the lag (0.5 s on a fresh instance); the check stays as a watch.

@@ -42,6 +42,13 @@ export function client(url: string) {
       return { status: r.status, json: r.ok ? ((await r.json()) as Record<string, unknown>) : null };
     },
 
+    /** The release of the instance (`/<space>/.ping`, X-Server-Version); empty when it names none. */
+    async release(token: string, space: string): Promise<string> {
+      const r = await fetch(`${url}/${space}/.ping`, { headers: auth(token) });
+      await r.arrayBuffer();
+      return r.headers.get("x-server-version") ?? "";
+    },
+
     /** Runs a Lua script in the user's runtime for that space; the runtime boots on the first call. */
     async lua(token: string, space: string, script: string, timeoutSec = 120): Promise<LuaResult> {
       const t0 = performance.now();
@@ -122,10 +129,20 @@ export function client(url: string) {
         return list as Array<{ id: string }>;
       },
 
-      /** Resets every runtime, so that the next Runtime API call boots a fresh client. */
+      /**
+       * Resets every runtime, so that the next Runtime API call boots a fresh client. A reset of 3.0.0
+       * fails at times ("remove browser profile: Directory not empty") and leaves the runtime unusable
+       * until the next one, so a failed reset is tried again.
+       */
       async resetRuntimes(token: string) {
         const list = await sb.admin.runtimes(token);
-        for (const rt of list) await sb.admin.api({ token }, "POST", `/admin/runtimes/${rt.id}/reset`);
+        for (const rt of list) {
+          for (let i = 0; i < 10; i++) {
+            const r = await sb.admin.api({ token }, "POST", `/admin/runtimes/${rt.id}/reset`);
+            if (r.status < 500) break;
+            await new Promise((resolve) => setTimeout(resolve, 500));
+          }
+        }
         return list.length;
       },
 

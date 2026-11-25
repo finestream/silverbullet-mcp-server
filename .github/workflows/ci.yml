@@ -31,8 +31,34 @@ jobs:
       - run: npm run test:integration
       - name: The Proposals library in the browser
         run: npm run test:library
-      - name: Release checks (access, parser, cost, API, transclusion, redaction, rows)
-        run: SB_BROWSER=0 node test/run.ts access parser cost api transclusion redaction rows
+      - name: Release checks (access, parser, cost, API, transclusion, redaction, rows, directives)
+        run: SB_BROWSER=0 node test/run.ts access parser cost api transclusion redaction rows directives
+      - name: Stop the test instance
+        if: always()
+        run: docker compose -f test/compose.yaml down -v
+
+  check-2:
+    # The last release of the line before 3, which the server still supports.
+    name: Integration tests on SilverBullet 2.12
+    runs-on: ubuntu-26.04
+    env:
+      SB_IMAGE: ghcr.io/silverbulletmd/silverbullet:2.12.1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Start the SilverBullet test instance
+        run: docker compose -f test/compose.yaml up -d --wait
+      - name: Bootstrap the test instance
+        run: node test/bootstrap.ts
+      - run: npm run test:integration
+      - name: The Proposals library in the browser
+        run: npm run test:library
+      - name: Release checks (access, parser, cost, API, transclusion, redaction, rows, directives)
+        run: SB_BROWSER=0 node test/run.ts access parser cost api transclusion redaction rows directives
       - name: Stop the test instance
         if: always()
         run: docker compose -f test/compose.yaml down -v
@@ -41,7 +67,7 @@ jobs:
     # A pull request builds the image without pushing it, so the steps of this
     # job are tested before a release; only a tag logs in and pushes.
     name: Build and push the image
-    needs: check
+    needs: [check, check-2]
     if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-26.04
     permissions:

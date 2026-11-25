@@ -14,9 +14,9 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { AccessList, Right, Rights, Subject } from "./access.ts";
-import { pageNameOf, renderersWithoutRead, rightsText, rowRules } from "./access.ts";
+import { hidingPlaces, pageNameOf, renderersWithoutRead, rightsText, rowRules } from "./access.ts";
 import type { Allowlist } from "./filter/allowlist.ts";
-import { describe, isCodePlace, TRANSCLUSION_RULE, type Verdict } from "./filter/filter.ts";
+import { codePlaces, describe, isCodePlace, TRANSCLUSION_RULE, type Verdict } from "./filter/filter.ts";
 import { checkPageLimited, CheckTimeout } from "./filter/check.ts";
 import type { Credential } from "./credentials.ts";
 import { diffOf, prepareEdits, type Edit } from "./edit.ts";
@@ -28,7 +28,7 @@ import { NEVER_WRITTEN_TYPES, type Config } from "./config.ts";
 import type { Log } from "./log.ts";
 import { matchAll, MatchTimeout, type MatchItem } from "./match.ts";
 
-/** A revision as the tools show it: SilverBullet's ETag without its quotation marks (`sha256:<hex>`); a weak ETag is left as it is. */
+/** A revision as the tools show it: SilverBullet's content revision, an ETag, without its quotation marks (`sha256:<hex>`); a weak ETag is left as it is. */
 export const revisionOf = (etag: string | null): string | null => (etag === null || etag.startsWith("W/") ? etag : etag.replace(/^"(.*)"$/, "$1"));
 
 /** Whether a revision a caller gave, with or without the quotation marks, is the strong ETag the file is at. */
@@ -123,6 +123,8 @@ export function normalizeName(filename: string): string {
 
 const SPACE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const REGEX_LIMIT = 300;
+/** The answer for a transclusion that is not the path of a file and may stand for a hidden one: the same whether there is one or not. */
+const INEXACT = "no page or file of exactly this name, and SilverBullet may take the name for the end of one that a reader of this page may not read; write the whole name of an existing one";
 /** The largest page the server writes, in characters. */
 const PAGE_LIMIT = 1_000_000;
 
@@ -187,13 +189,12 @@ export function registerTools(server: McpServer, ctx: Context) {
     }
   };
 
-  const listing = async (space: string): Promise<SbFile[]> => {
-    const cached = cache.listing(user.user, space);
-    if (cached) return cached;
+  const freshListing = async (space: string): Promise<SbFile[]> => {
     const files = await sb.list(token, space);
     cache.setListing(user.user, space, files);
     return files;
   };
+  const listing = async (space: string): Promise<SbFile[]> => cache.listing(user.user, space) ?? (await freshListing(space));
 
   /** The files of a space the user may read. */
   const visible = async (space: string) => (await listing(space)).filter((f) => rightsOn(space, f.name).has("r"));
@@ -233,16 +234,23 @@ export function registerTools(server: McpServer, ctx: Context) {
    * check runs in a worker with a time limit; a page it cannot decide in time is refused too.
    */
   const checkContent = async (space: string, file: string, content: string, outcome = "Nothing was written.") => {
-    if (!file.toLowerCase().endsWith(".md") || isCodePlace(pageNameOf(file))) return;
+    if (!file.toLowerCase().endsWith(".md") || isCodePlace(pageNameOf(file), state.libraryOnly(space))) return;
     const page = pageNameOf(file);
+    // SilverBullet takes a target that is not the path of a file for one whose path ends in it (FileIndex). Whether
+    // such a file exists where the writer may not read is not told: what the access list leaves room for is refused.
+    const files = new Set(content.includes("![[") ? (await freshListing(space)).map((f) => f.name) : []);
+    const renderers = subjects.filter((s) => acl.rights(s.user, s.groups, space, page).has("x"));
+    const mayHide = hidingPlaces(acl, [user, ...renderers], space);
     let verdict: Verdict;
     try {
       verdict = await checkPageLimited(content, allow, {
         page,
-        denied(target) {
-          if (!rightsOn(space, target).has("r")) return `user "${user.user}" has no "r" on ${space}/${target}`;
+        denied(path, lookup) {
+          const what = `${space}/${pageNameOf(path)}`;
+          if (!rightsOn(space, path).has("r")) return `user "${user.user}" has no "r" on ${what}`;
           // Other users are not named to the writer; the report page names them to the operator.
-          if (renderersWithoutRead(acl, subjects, space, page, target).length) return `a user who may render this page ("x") has no "r" on ${space}/${target}`;
+          if (renderersWithoutRead(acl, renderers, space, page, path).length) return `a user who may render this page ("x") has no "r" on ${what}`;
+          if (lookup && !files.has(path) && mayHide(path)) return INEXACT;
           return null;
         },
       });
@@ -259,7 +267,7 @@ export function registerTools(server: McpServer, ctx: Context) {
     const rules: string[] = [];
     if (code.length) rules.push("no code fences, no function definitions or assignments, calls only to allowed functions");
     if (transclusions.length) rules.push("no transclusion of a page or file that the writer, or a user who may render the page, may not read");
-    throw new Refusal("write-filter", `Refused by the write filter: ${parts.join("; and ")}. ${outcome} Pages outside CONFIG and Library/ are data: ${rules.join("; ")} (docs/security.md, section 5).`);
+    throw new Refusal("write-filter", `Refused by the write filter: ${parts.join("; and ")}. ${outcome} Pages outside ${codePlaces(state.libraryOnly(space))} are data: ${rules.join("; ")} (docs/security.md, section 5).`);
   };
 
   /** After a write or delete through the server: the listing is stale, the page's findings go, and a render waits for the index to hold the change. */
@@ -555,7 +563,7 @@ export function registerTools(server: McpServer, ctx: Context) {
     "create-note",
     {
       title: "Create note",
-      description: "Create a page (or, where allowed, another file). Pages outside CONFIG and Library/ must hold no code and transclude nothing their reader may not read: the write filter refuses them otherwise.",
+      description: "Create a page (or, where allowed, another file). Pages outside Library/ (and CONFIG on SilverBullet 2) must hold no code and transclude nothing their reader may not read: the write filter refuses them otherwise.",
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       inputSchema: {
         space,
@@ -672,11 +680,12 @@ export function registerTools(server: McpServer, ctx: Context) {
   const PROPOSED = "Nothing was proposed.";
 
   /** A page a proposal may name as its target or new name (docs/proposals.md, section 4). */
-  const proposable = (file: string, what: string) => {
+  const proposable = (space: string, file: string, what: string) => {
     if (!file.endsWith(".md")) throw new Refusal("file-type", `Refused by the file-type rule: a proposal changes pages (.md) only; ${what} "${file}" is another file type.`);
     notReportPage(file);
     const page = pageNameOf(file);
-    if (isCodePlace(page)) throw new Refusal("input", `${what} ${page} is CONFIG or lies in Library/, where pages are code; a proposal changes data pages only. ${PROPOSED}`);
+    const libraryOnly = state.libraryOnly(space);
+    if (isCodePlace(page, libraryOnly)) throw new Refusal("input", `${what} ${page} ${libraryOnly ? "lies in" : "is CONFIG or lies in"} Library/, where pages are code; a proposal changes data pages only. ${PROPOSED}`);
     const why = outsideProposalFolders(page, config);
     if (why) throw new Refusal("input", `${what} ${why}; the library applies no proposal there. ${PROPOSED}`);
   };
@@ -693,7 +702,7 @@ export function registerTools(server: McpServer, ctx: Context) {
     if (refusal) throw new Refusal("proposals", refusal);
     if (args.reason.trim() === "") throw new Refusal("input", `The reason is empty; say why the change is proposed, for the person who reviews it. ${PROPOSED}`);
     const file = normalizeName(args.filename);
-    proposable(file, "The target");
+    proposable(s, file, "The target");
     const proposal = normalizeName(`${config.proposalsDir}${args.name.replace(/^\/+/, "")}`);
     if (!proposal.endsWith(".md")) throw new Refusal("input", `The proposal name "${args.name}" ends in a file extension; give a page name without a dot in its last part. ${PROPOSED}`);
     notReportPage(proposal);
@@ -812,7 +821,7 @@ export function registerTools(server: McpServer, ctx: Context) {
     tool("propose-move", async (args) => {
       const { s, file, page, proposal, original, revision } = await proposalStart(args);
       const to = normalizeName(args.newName);
-      proposable(to, "The new name");
+      proposable(s, to, "The new name");
       if (to === file) throw new Refusal("input", `The new name is the page's name. ${PROPOSED}`);
       // Whether a page exists is told only where the user may read.
       need(s, to, "r");

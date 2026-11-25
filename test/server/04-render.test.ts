@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { startServer, connect, credentialsFile, BEARERS, DEFAULT_ACCESS_LIST, unique, type RunningServer, type McpClient } from "./harness.ts";
 import { navigateScript } from "../../src/render.ts";
-import { sb, T, SB_URL } from "../lib/env.ts";
+import { sb, T, SB_URL, V3, CONFIG_PAGE } from "../lib/env.ts";
 
 const RENDER_ACCESS =
   DEFAULT_ACCESS_LIST +
@@ -57,7 +57,7 @@ test("render-note: expressions, the page context, a query over tasks, a template
   assert.match(md, /Current page: Rendered\n/, "_CTX.currentPage is set for the render");
   assert.match(md, /\* \[ \] \[\[Projects\/One@\d+\]\] Task one of project one/, "the task query rendered through templates.taskItem");
   assert.match(md, /\* \[x\] \[\[Projects\/One@\d+\]\] Task two of project one/);
-  assert.match(md, /\* \[ \] \[\[Projects\/Two@\d+\]\] Task of project two/);
+  assert.match(md, /\* \[ \] \[\[Projects\/Two@\d+(\]\]|\|Projects\/Two\]\]:) Task of project two/);
   assert.match(md, /## Projects\n(?:[^\n]*\n)*?Projects\/One\n(?:[^\n]*\n)*?Projects\/Two\n/, "a select of plain values renders as text, one per line");
   assert.match(md, /marker-gamma-one/, "the transclusion is expanded");
   assert.doesNotMatch(md, /\$\{/, "no directive is left");
@@ -129,7 +129,7 @@ test("refusals: a user cannot render a page of a space SilverBullet does not gra
 test("scan findings block rendering in that space only; read and write there still work", async () => {
   const blocked = await alice.call("render-note", { space: "alpha", filename: "Rendered" });
   assert.equal(blocked.isError, true);
-  assert.match(blocked.text, /^Rendering is blocked in space "alpha": the last scan found \d+ finding\(s\) on \d+ page\(s\) with code outside CONFIG and Library\/.*report page "MCP Server"/);
+  assert.match(blocked.text, /^Rendering is blocked in space "alpha": the last scan found \d+ finding\(s\) on \d+ page\(s\) with code outside (CONFIG and )?Library\/.*report page "MCP Server"/);
   assert.match((await alice.call("screenshot-note", { space: "alpha", filename: "Rendered" })).text, /^Rendering is blocked in space "alpha"/);
   const read = await alice.call("read-note", { space: "alpha", filename: "Rendered" });
   assert.equal(read.isError, false, "read still works");
@@ -146,28 +146,34 @@ test("scan findings block rendering in that space only; read and write there sti
 test("transclusion: a page that transcludes what its writer may not read is refused at write time, in every form SilverBullet expands", async () => {
   // The case found with the render tools: w and x under a path, no r on CONFIG, a page holding only a transclusion of CONFIG.
   const name = track(unique("Projects/Leak"));
-  const refused = await alice.call("create-note", { space: "gamma", filename: name, content: "![[CONFIG]]\n" });
+  const refused = await alice.call("create-note", { space: "gamma", filename: name, content: `![[${CONFIG_PAGE}]]\n` });
   assert.equal(refused.isError, true, refused.text);
-  assert.match(refused.text, /^Refused by the write filter: the page would transclude what its reader may not read \(line 1, transclusion-denied: !\[\[CONFIG\]\]: user "alice" has no "r" on gamma\/CONFIG\)\. Nothing was written\./);
+  assert.match(refused.text, new RegExp(String.raw`^Refused by the write filter: the page would transclude what its reader may not read \(line 1, transclusion-denied: !\[\[${CONFIG_PAGE}\]\]: user "alice" has no "r" on gamma/${CONFIG_PAGE}\)\. Nothing was written\.`));
   assert.equal((await sb.read(T.admin, "gamma", `${name}.md`)).status, 404, "nothing was written");
-  for (const form of ["![[CONFIG#Settings|the settings]]", "![[/CONFIG.md]]", "<!-- ![[CONFIG]] -->", "![config](/CONFIG)", "![[Library/Std/Config]]"]) {
+  for (const form of [`![[${CONFIG_PAGE}#Settings|the settings]]`, `![[/${CONFIG_PAGE}.md]]`, `<!-- ![[${CONFIG_PAGE}]] -->`, `![config](/${CONFIG_PAGE})`, "![[Library/Std/Config]]"]) {
     const r = await alice.call("create-note", { space: "gamma", filename: name, content: `Intro\n\n${form}\n` });
     assert.equal(r.isError, true, `${form}: ${r.text}`);
     assert.match(r.text, /line 3, transclusion-denied: /, form);
   }
+  // SilverBullet takes a target in any case, and by the end of its path: one that is not the path of a file is refused where it may stand for a hidden one.
+  for (const form of [`![[${CONFIG_PAGE.toLowerCase()}]]`, "![[Std/Config]]", "![[std/config]]"]) {
+    const r = await alice.call("create-note", { space: "gamma", filename: name, content: `${form}\n` });
+    assert.equal(r.isError, true, `${form}: ${r.text}`);
+    assert.match(r.text, /line 1, transclusion-denied: .*: no page or file of exactly this name, and SilverBullet may take the name for/, form);
+  }
   // Code and a transclusion in one page: both are named.
-  const both = await alice.call("create-note", { space: "gamma", filename: name, content: '${space.readPage("CONFIG")}\n\n![[CONFIG]]\n' });
+  const both = await alice.call("create-note", { space: "gamma", filename: name, content: `\${space.readPage("CONFIG")}\n\n![[${CONFIG_PAGE}]]\n` });
   assert.match(both.text, /the page would hold code \(line 1, denied-name: space\.readPage\); and the page would transclude what its reader may not read \(line 3, transclusion-denied/);
   // A readable target and an inert mention are accepted, and the render expands the transclusion.
-  const ok = await alice.call("create-note", { space: "gamma", filename: name, content: "![[Projects/One]]\n\nWrite `![[CONFIG]]` to transclude a page.\n" });
+  const ok = await alice.call("create-note", { space: "gamma", filename: name, content: `![[Projects/One]]\n\nWrite \`![[${CONFIG_PAGE}]]\` to transclude a page.\n` });
   assert.equal(ok.isError, false, ok.text);
   const rendered = await alice.call("render-note", { space: "gamma", filename: name });
   assert.match(rendered.data!.content as string, /marker-gamma-one/);
-  assert.doesNotMatch(rendered.data!.content as string, /agentTest|tag\.define/, "nothing of CONFIG");
+  assert.doesNotMatch(rendered.data!.content as string, /agentTest|tag\.define/, `nothing of ${CONFIG_PAGE}`);
   // edit-note filters the resulting page.
-  const edit = await alice.call("edit-note", { space: "gamma", filename: name, expectedRevision: ok.data!.revision, edits: [{ oldText: "![[Projects/One]]", newText: "![[CONFIG]]" }] });
+  const edit = await alice.call("edit-note", { space: "gamma", filename: name, expectedRevision: ok.data!.revision, edits: [{ oldText: "![[Projects/One]]", newText: `![[${CONFIG_PAGE}]]` }] });
   assert.equal(edit.isError, true, edit.text);
-  assert.match(edit.text, /transclusion-denied: !\[\[CONFIG\]\]/);
+  assert.match(edit.text, new RegExp(String.raw`transclusion-denied: !\[\[${CONFIG_PAGE}\]\]`));
 });
 
 test("transclusion: a target the writer may read and another user who may render the page may not is refused too", async () => {
@@ -186,15 +192,61 @@ test("transclusion: a target the writer may read and another user who may render
   }
 });
 
+test("transclusion: the answer for a target that is not the path of a readable file is the same whether a hidden file would be shown in its place or not", async () => {
+  const hidden = "Zq hidden";
+  const name = track(unique("Projects/Oracle"));
+  const ask = async (form: string) => {
+    const r = await alice.call("create-note", { space: "gamma", filename: name, content: `${form}\n`, overwrite: true });
+    return [r.isError, r.text] as const;
+  };
+  const forms = [`![[${hidden}]]`, `![[${hidden.toUpperCase()}]]`, `![[${hidden}.MD]]`, `![[${hidden}#Part]]`, `![[Library/${hidden}]]`, `![x](${hidden.replace(" ", "%20")})`];
+  const without = await Promise.all(forms.map(ask));
+  await sb.write(T.admin, "gamma", `Library/${hidden}.md`, "nothing to see\n");
+  try {
+    assert.deepEqual(await Promise.all(forms.map(ask)), without);
+  } finally {
+    await sb.remove(T.admin, "gamma", `Library/${hidden}.md`);
+  }
+  assert.deepEqual(without.map(([refused]) => refused), [true, true, true, true, true, false], "the image form is not looked up");
+});
+
+test("transclusion: a target is compared with the files as they are now, not with a listing of before; a space with nothing hidden takes any name", async () => {
+  const name = track(unique("Projects/Fresh"));
+  const target = unique("Projects/Target");
+  const ask = () => alice.call("create-note", { space: "gamma", filename: name, content: `![[${target}]]\n`, overwrite: true });
+  await alice.call("list-notes", { space: "gamma" });
+  assert.match((await ask()).text, /no page or file of exactly this name/);
+  await alice.call("list-notes", { space: "gamma" });
+  await sb.write(T.admin, "gamma", `${target}.md`, "there now\n");
+  try {
+    const r = await ask();
+    assert.equal(r.isError, false, r.text);
+    await alice.call("list-notes", { space: "gamma" });
+  } finally {
+    await sb.remove(T.admin, "gamma", `${target}.md`);
+  }
+  assert.match((await ask()).text, /no page or file of exactly this name/, "and gone again");
+
+  const open = await startServer({ accessList: "alice gamma / rwdx\n" });
+  const alice2 = await connect(open.url, BEARERS.alice);
+  try {
+    const r = await alice2.call("create-note", { space: "gamma", filename: name, content: `![[${target}]] ![[one]]\n`, overwrite: true });
+    assert.equal(r.isError, false, r.text);
+  } finally {
+    await alice2.close();
+    await open.stop();
+  }
+});
+
 test("transclusion: the scan reports a page written by another route, naming who may render it; rendering is blocked in that space until it is gone", async () => {
   const name = unique("Projects/Direct");
-  await sb.write(T.admin, "gamma", `${name}.md`, "Written in the editor.\n\n![[CONFIG]]\n");
+  await sb.write(T.admin, "gamma", `${name}.md`, `Written in the editor.\n\n![[${CONFIG_PAGE}]]\n`);
   try {
     await server.rescan();
     const report = (await sb.read(T.admin, "gamma", "MCP Server.md")).text;
     const row = report.split("\n").find((l) => l.includes(name));
     assert.ok(row, `a finding for ${name}:\n${report}`);
-    assert.match(row!, /\| 3 \| `transclusion-denied` \| `!\[\[CONFIG\]\]: alice may render this page \(x\) and may not read CONFIG` \|/);
+    assert.match(row!, new RegExp(String.raw`\| 3 \| \`transclusion-denied\` \| \`!\[\[${CONFIG_PAGE}\]\]: alice may render this page \(x\) and may not read ${CONFIG_PAGE}\` \|`));
     const blocked = await alice.call("render-note", { space: "gamma", filename: "Rendered" });
     assert.equal(blocked.isError, true);
     assert.match(blocked.text, /^Rendering is blocked in space "gamma": the last scan found 1 transclusion\(s\) of a page that a user who may render there may not read\./);
@@ -342,20 +394,26 @@ test("read-note and the other source tools never touch /.runtime/*; the render t
   }
 });
 
-test("render check: a transclusion an expression builds passes the write filter; the screenshot that would show it is refused, render-note leaves it as text; the next screenshot is clean", async () => {
+test("render check: a transclusion an expression builds, on a page written by another route; the screenshot that would show it is refused, render-note leaves it as text (SilverBullet 2) or is refused (3); the next screenshot is clean", async () => {
   // The case the write filter cannot see: the target's name is built at run time (docs/security.md, section 12).
   const name = track(unique("Projects/Built"));
-  const c = await alice.call("create-note", { space: "gamma", filename: name, content: 'Intro\n\n${"![[" .. "CONFIG]]"}\n\nOutro\n' });
-  assert.equal(c.isError, false, c.text);
+  const c = await sb.write(T.admin, "gamma", `${name}.md`, `Intro\n\n\${"![[" .. "${CONFIG_PAGE}]]"}\n\nOutro\n`);
+  assert.ok(c.status < 300, String(c.status));
   const shot = await alice.call("screenshot-note", { space: "gamma", filename: name });
-  assert.equal(shot.isError, true, "the screenshot would show CONFIG");
-  assert.match(shot.text, /^Refused by the render check: the render loaded what its reader may not read \(gamma\/CONFIG: user "alice" has no "r"\)\. Nothing was returned\./);
+  assert.equal(shot.isError, true, `the screenshot would show ${CONFIG_PAGE}`);
+  assert.match(shot.text, new RegExp(String.raw`^Refused by the render check: the render loaded what its reader may not read \(gamma/${CONFIG_PAGE}: user "alice" has no "r"\)\. Nothing was returned\.`));
   assert.equal(shot.image, undefined, "no image content");
   const md = await alice.call("render-note", { space: "gamma", filename: name });
-  assert.equal(md.isError, false, md.text);
-  assert.match(md.data!.content, /\n!\[\[CONFIG\]\]\n/, "the Runtime API's expansion leaves the built transclusion as text");
-  assert.doesNotMatch(md.data!.content, /agentTest|tag\.define/, "nothing of CONFIG");
-  assert.equal(md.data!.loaded, 1, "only the page itself was loaded");
+  if (V3) {
+    assert.equal(md.isError, true, "the Runtime API's expansion expands the built transclusion too");
+    assert.match(md.text, new RegExp(String.raw`^Refused by the render check: the render loaded what its reader may not read \(gamma/${CONFIG_PAGE}: user "alice" has no "r"\)`));
+    assert.doesNotMatch(md.text, /agentTest|tag\.define/, `nothing of ${CONFIG_PAGE}`);
+  } else {
+    assert.equal(md.isError, false, md.text);
+    assert.match(md.data!.content, new RegExp(String.raw`\n!\[\[${CONFIG_PAGE}\]\]\n`), "the Runtime API's expansion leaves the built transclusion as text");
+    assert.doesNotMatch(md.data!.content, /agentTest|tag\.define/, `nothing of ${CONFIG_PAGE}`);
+    assert.equal(md.data!.loaded, 1, "only the page itself was loaded");
+  }
   // The refused page is left; the runtime is parked between screenshots, so its loads do not taint the next one.
   const next = await alice.call("screenshot-note", { space: "gamma", filename: "Rendered", selector: "#sb-editor" });
   assert.equal(next.isError, false, next.text);
@@ -369,15 +427,15 @@ test("render check: a transclusion an expression builds passes the write filter;
 
 test("render check: a page written by another route that transcludes CONFIG is refused by both render tools at once, before any scan", async () => {
   const name = unique("Projects/Direct");
-  await sb.write(T.admin, "gamma", `${name}.md`, "Written in the editor.\n\n![[CONFIG]]\n");
+  await sb.write(T.admin, "gamma", `${name}.md`, `Written in the editor.\n\n![[${CONFIG_PAGE}]]\n`);
   try {
     const md = await alice.call("render-note", { space: "gamma", filename: name });
     assert.equal(md.isError, true, md.text);
-    assert.match(md.text, /^Refused by the render check: the render loaded what its reader may not read \(gamma\/CONFIG: user "alice" has no "r"\)/);
-    assert.doesNotMatch(md.text, /agentTest|tag\.define/, "nothing of CONFIG");
+    assert.match(md.text, new RegExp(String.raw`^Refused by the render check: the render loaded what its reader may not read \(gamma/${CONFIG_PAGE}: user "alice" has no "r"\)`));
+    assert.doesNotMatch(md.text, /agentTest|tag\.define/, `nothing of ${CONFIG_PAGE}`);
     const shot = await alice.call("screenshot-note", { space: "gamma", filename: name });
     assert.equal(shot.isError, true, shot.text);
-    assert.match(shot.text, /^Refused by the render check: .*gamma\/CONFIG/);
+    assert.match(shot.text, new RegExp(String.raw`^Refused by the render check: .*gamma/${CONFIG_PAGE}`));
     const clean = await alice.call("render-note", { space: "gamma", filename: "Rendered" });
     assert.equal(clean.isError, false, clean.text);
     assert.equal(clean.data!.loaded, 2, "Rendered and Projects/One");

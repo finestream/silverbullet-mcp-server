@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { checkPage, findTransclusions, transclusionTargets } from "./filter.ts";
+import { checkPage, codePlaces, FileIndex, findTransclusions, isCodePlace, transclusionTargets } from "./filter.ts";
 import { cases, matrixReader } from "./cases.ts";
 import { readFileSync } from "node:fs";
 import { compileAllowlist, isNeverAllowed, NEVER_ALLOWED, parseAllowlist, REVIEWED_MEMBERS, SHIPPED_ALLOWLIST, shippedAllowlist, validateAllowlist } from "./allowlist.ts";
@@ -152,19 +152,22 @@ test("filter: a transclusion violation names the rule, the line, the transclusio
   assert.ok(checkPage(page, shippedAllowlist()).ok);
 });
 
-test("filter: the targets of a transclusion are every page it may resolve to", () => {
-  const targets = (raw: string, image = false) => transclusionTargets(raw, "Notes/Matrix", image).sort();
-  assert.deepEqual(targets("CONFIG"), ["CONFIG"]);
-  assert.deepEqual(targets("/CONFIG.md"), ["CONFIG"]);
-  assert.deepEqual(targets("^CONFIG|alias"), ["CONFIG"]);
-  assert.deepEqual(targets("Private/Plan#Budget"), ["Private/Plan", "Private/Plan#Budget"]);
+test("filter: the targets of a transclusion are every file it may resolve to; the shortest reading of ![[…]] is the one SilverBullet looks up", () => {
+  const targets = (raw: string, image = false) => transclusionTargets(raw, "Notes/Matrix", image).map((t) => `${t.path}${t.lookup ? " +" : ""}`).sort();
+  assert.deepEqual(targets("CONFIG"), ["CONFIG.md +"]);
+  assert.deepEqual(targets("/CONFIG.md"), ["CONFIG.md +"]);
+  assert.deepEqual(targets("^CONFIG|alias"), ["CONFIG.md +"]);
+  assert.deepEqual(targets("Private/Plan.MD"), ["Private/Plan.MD +"]);
+  assert.deepEqual(targets("x.pdf"), ["x.pdf +"]);
+  assert.deepEqual(targets("a.b c"), ["a.b c.md +"], "no extension: not only letters and digits");
+  assert.deepEqual(targets("Private/Plan#Budget"), ["Private/Plan#Budget.md", "Private/Plan.md +"]);
   // `@` may be part of a page name or start a position: both readings
-  assert.deepEqual(targets("People/@ann@12"), ["People/", "People/@ann", "People/@ann@12"]);
+  assert.deepEqual(targets("People/@ann@12"), ["People/.md +", "People/@ann.md", "People/@ann@12.md"]);
   assert.deepEqual(targets("#Intro"), []);
-  assert.deepEqual(targets("Notes/Matrix#Intro"), ["Notes/Matrix#Intro"]);
-  assert.deepEqual(targets("../Private/Plan.md", true), ["Private/Plan"]);
-  assert.deepEqual(targets("Plan", true), ["Notes/Plan", "Plan"]);
-  assert.deepEqual(targets("/Private%2FPlan", true), ["Private%2FPlan", "Private/Plan"]);
+  assert.deepEqual(targets("Notes/Matrix#Intro"), ["Notes/Matrix#Intro.md"]);
+  assert.deepEqual(targets("../Private/Plan.md", true), ["Private/Plan.md"]);
+  assert.deepEqual(targets("Plan", true), ["Notes/Plan.md", "Plan.md"]);
+  assert.deepEqual(targets("/Private%2FPlan", true), ["Private%2FPlan.md", "Private/Plan.md"]);
   assert.deepEqual(targets("https://example.org/x.png", true), []);
   assert.deepEqual(targets("data:image/png;base64,AAAA", true), []);
 });
@@ -180,4 +183,106 @@ test("filter: transclusions are found in time linear in the page, whatever unclo
   // Several openers before one close: the first and the last are both reported.
   assert.deepEqual(findTransclusions("![[a ![[b ![[CONFIG]]").map((t) => t.raw), ["a ![[b ![[CONFIG", "CONFIG"]);
   assert.deepEqual(findTransclusions("![x](/a) ![[b|c]] ![y](<d e> \"t\")").map((t) => `${t.image ? "image" : "wiki"} ${t.raw}`), ["image /a", "wiki b|c", "image d e"]);
+});
+
+test("filter: a directive is judged by the end each release takes: 3.0 does not count braces in Lua strings, long brackets and comments", () => {
+  const allow = shippedAllowlist();
+  const call = "tostring(1)";
+  for (const page of [
+    `x \${"{" .. ${call}} y`,
+    `x \${'{' .. ${call}} y`,
+    `x \${[[{]] .. ${call}} y`,
+    `x \${[==[{]==] .. ${call}} y`,
+    `x \${1 --[[ { ]] + ${call}} y`,
+    `x \${1 --[==[ { ]==] + ${call}} y`,
+    `x \${"\\"{" .. ${call}} y`,
+    `| a |\n|---|\n| \${"{" .. ${call}} |\n`,
+    `x \${${call}} y`,
+  ]) {
+    const v = checkPage(page, allow);
+    assert.ok(v.violations.some((x) => x.rule === "call-not-allowed" && x.detail === "tostring"), `${page}: ${JSON.stringify(v.violations)}`);
+  }
+  for (const page of ['x ${"{"} y', 'x ${"a" .. [[{]]} y', 'x ${query[[from p = index.tag "page" where p.name == "{" select p.name]]} y', "x ${ { a = 1 } } y"]) {
+    assert.equal(checkPage(page, allow).ok, true, page);
+  }
+  // An end only one of them takes is checked as well.
+  assert.equal(checkPage('x ${"}" .. "a"} y', allow).ok, false, "2.12 ends it inside the string, where it does not parse");
+});
+
+test("filter: every ${ is judged on its own, since SilverBullet looks for a directive's end within its block", () => {
+  const allow = shippedAllowlist();
+  for (const page of ["a ${[[ {\n\n${tostring(1)} } ]] }\n", "a ${[[ {\n\n- ${tostring(1)} } ]] }\n", "${[[ {\n# ${tostring(1)} } ]] }\n", '${"${tostring(1)}"}\n']) {
+    const v = checkPage(page, allow);
+    assert.ok(v.violations.some((x) => x.detail === "tostring"), `${JSON.stringify(page)}: ${JSON.stringify(v.violations)}`);
+  }
+});
+
+test("filter: page variables of 3.0 (assignments) are refused", () => {
+  const allow = shippedAllowlist();
+  for (const body of ["x = 1", "local x = 1", " x=1", 'string = "a"', 'total = string.len("a")', "x = y", "x == 1 and 2"]) {
+    assert.equal(checkPage(`a \${${body}} b`, allow).ok, false, body);
+  }
+});
+
+test("filter: many openers cost a bounded time", () => {
+  for (const piece of ["${", '${"', "${[[", "${--[[", "${ { ", "${}", '${"a"} ', "${[[ { }]] }"]) {
+    const t0 = performance.now();
+    checkPage(piece.repeat(20_000), shippedAllowlist());
+    assert.ok(performance.now() - t0 < 5000, `${piece}: ${Math.round(performance.now() - t0)} ms`);
+  }
+});
+
+test("file index: the file of exactly the path, otherwise every file whose path ends in it, in any case", () => {
+  const index = new FileIndex(["index.md", "Private/Plan.md", "Notes/plan.md", "Private/Plans.md", "img.png", "Docs/x.pdf", "x.pdf.md", "Docs/Upper.MD"]);
+  assert.ok(index.has("Private/Plan.md") && !index.has("Private/Plan") && !index.has("private/plan.md"));
+  assert.deepEqual(index.others("Private/Plan.md"), [], "the exact path");
+  assert.deepEqual(index.others("private/plan.md"), ["Private/Plan.md"]);
+  assert.deepEqual(index.others("Plan.md"), ["Private/Plan.md", "Notes/plan.md"]);
+  assert.deepEqual(index.others("plan.MD"), ["Private/Plan.md", "Notes/plan.md"], "the extension in any case");
+  assert.deepEqual(index.others("Upper.md"), ["Docs/Upper.MD"]);
+  assert.deepEqual(index.others("x.pdf"), ["Docs/x.pdf"], "the page x.pdf.md is not the file x.pdf");
+  assert.deepEqual(index.others("IMG.png"), ["img.png"]);
+  assert.deepEqual(index.others("lan.md"), [], "a part of a segment is no end");
+  assert.deepEqual(index.others("Missing.md"), []);
+  assert.equal(index.others("plan.md"), index.others("PLAN.md"), "one array for every spelling");
+});
+
+test("filter: the image form is judged as it is, ![[…]] with the lookup; each text and each file once", () => {
+  const asked: string[] = [];
+  const page = "![[Deep]] ![[Deep]] ![[Deep#Part]] ![x](Deep) ![x](Deep) ![[pic.png]] ![y](pic.png)\n".repeat(50);
+  const v = checkPage(page, shippedAllowlist(), {
+    page: "Notes/Page",
+    denied(path, lookup) {
+      asked.push(`${path} ${lookup}`);
+      return lookup && path === "Deep.md" ? "no r" : null;
+    },
+  });
+  assert.deepEqual(asked.sort(), ["Deep.md false", "Deep.md true", "Notes/Deep.md false", "Notes/pic.png false", "pic.png false", "pic.png true"]);
+  assert.equal(v.violations.length, 150, "every place is reported");
+});
+
+test("filter: many transclusions cost a bounded time, however many files the space has", () => {
+  const files = Array.from({ length: 3000 }, (_, i) => `Folder ${i % 50}/Page ${i}.md`);
+  const index = new FileIndex(files);
+  for (const page of ["![[Nope#a@b$c]]\n".repeat(2000), Array.from({ length: 2000 }, (_, i) => `![[n${i}#a@b]]\n`).join(""), Array.from({ length: 2000 }, (_, i) => `![[Page ${i}]]\n`).join("")]) {
+    const t0 = performance.now();
+    let found = 0;
+    checkPage(page, shippedAllowlist(), {
+      page: "Notes/Page",
+      denied(path, lookup) {
+        if (lookup) found += index.others(path).length;
+        return null;
+      },
+    });
+    assert.equal(found, page.includes("Page 1]]") ? 2000 : 0);
+    assert.ok(performance.now() - t0 < 1000, `${page.slice(0, 20)}: ${Math.round(performance.now() - t0)} ms`);
+  }
+});
+
+test("code places: Library/ always, CONFIG on SilverBullet 2 only", () => {
+  for (const page of ["Library/Config", "Library/Any/Page"]) assert.ok(isCodePlace(page, false) && isCodePlace(page, true), page);
+  for (const page of ["Library", "library/x", "Notes/Library/x", "Config"]) assert.ok(!isCodePlace(page, false) && !isCodePlace(page, true), page);
+  assert.ok(isCodePlace("CONFIG", false) && !isCodePlace("CONFIG", true));
+  assert.equal(codePlaces(false), "CONFIG and Library/");
+  assert.equal(codePlaces(true), "Library/");
 });

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { compileAccessList, parseAccessList, renderersWithoutRead, rendersWithDenials, rightsText, rowRules, ruleAllows } from "./access.ts";
+import { compileAccessList, hidingPlaces, parseAccessList, renderersWithoutRead, rendersWithDenials, rightsText, rowRules, ruleAllows } from "./access.ts";
 
 const LIST = `
 # user-or-group  space    path            rights
@@ -184,4 +184,19 @@ test("row rules: none when the user may read every path they reach; a folder ent
   assert.equal(narrow.root, false);
   assert.equal(ruleAllows(narrow, "Drafts/One"), true);
   assert.equal(ruleAllows(narrow, "index"), false);
+});
+
+test("hidingPlaces: told from the list alone: a denied folder or root leaves room for any name, a denied page for the ends of its path, in any case", () => {
+  const may = (list: string, path: string, subjects = [{ user: "alice", groups: ["agents"] }]) => hidingPlaces(compileAccessList(parseAccessList(list).entries), subjects, "notes")(path);
+  assert.equal(may("@agents notes / r\n", "Plan.md"), false, "nothing is hidden");
+  assert.equal(may("@agents notes / r\n@agents notes Private/ -\n", "Plan.md"), true);
+  assert.equal(may("@agents notes / -\n@agents notes Notes/ r\n", "Notes/Plan.md"), true);
+  assert.equal(may("@agents notes Notes/ r\n", "Plan.md"), true, "no entry for the root is a denial");
+  const exact = "@agents notes / r\n@agents notes Library/Config -\n@agents notes Files/photo.png -\n";
+  for (const path of ["Config.md", "config.md", "library/config.md", "CONFIG.MD", "photo.png", "Files/PHOTO.png"]) assert.equal(may(exact, path), true, path);
+  for (const path of ["onfig.md", "Plan.md", "Other/Config.md", "hoto.png", "Config.png"]) assert.equal(may(exact, path), false, path);
+  // An entry for another space or user says nothing; one of several subjects is enough.
+  assert.equal(may("@agents notes / r\n@agents other Private/ -\nbob notes Private/ -\n", "Plan.md"), false);
+  assert.equal(may("@agents notes / r\nbob notes / r\nbob notes Private/ -\n", "Plan.md", [{ user: "alice", groups: ["agents"] }, { user: "bob", groups: [] }]), true);
+  assert.equal(may("@agents notes / r\n@agents notes Private/ -\nalice notes Private/ r\n", "Plan.md"), false, "the user entry wins");
 });

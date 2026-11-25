@@ -3,7 +3,7 @@
 // statistics the report page shows. The refuse-to-serve and render-block
 // decisions (docs/security.md, sections 9 and 7) are read from here.
 
-import { TRANSCLUSION_RULE } from "./filter/filter.ts";
+import { codePlaces, TRANSCLUSION_RULE } from "./filter/filter.ts";
 import type { LibraryCheck } from "./proposal.ts";
 
 export type Finding = { page: string; line: number; rule: string; detail: string };
@@ -15,7 +15,15 @@ export type SpaceState = {
   guarded: boolean;
   /** Why the space is not guarded, when it is not. */
   unguardedReason: string | null;
-  transform: "present" | "missing" | "unchecked";
+  /** The instance's release as last named, kept while SilverBullet does not answer; null when it named none. */
+  release: string | null;
+  /**
+   * Whether CONFIG is a page like any other, as SilverBullet 3 and newer take it, which load code
+   * from Library/ only. Also while the release is not known: CONFIG is exempt from the filter and
+   * the scan only where the release is known to be 2.
+   */
+  libraryOnly: boolean;
+  transform: "present" | "missing" | "not-needed" | "unchecked";
   findings: Finding[];
   files: FileFinding[];
   /** Pages the last scan quarantined. */
@@ -83,6 +91,8 @@ export class State {
         space: name,
         guarded: false,
         unguardedReason: "not yet checked",
+        release: null,
+        libraryOnly: true,
         transform: "unchecked",
         findings: [],
         files: [],
@@ -140,10 +150,15 @@ export class State {
       const why = s?.unguardedReason ?? "the server has not seen this space";
       return `Refusing to serve space "${space}": it is not guarded (${why}). Operator: make the technical user "${this.scanUser}" a write member of the space (docs/security.md, section 7); the server re-checks on the next scan or SIGHUP.`;
     }
-    if (s.transform !== "present") {
-      return `Refusing to serve space "${space}": the index-time transform is missing from CONFIG or differs from the shipped block. Operator: add the block of docs/security.md, section 10, to CONFIG verbatim and run "Space: Reindex" in every client; the server re-checks on the next scan or SIGHUP.`;
+    if (s.transform !== "present" && s.transform !== "not-needed") {
+      return `Refusing to serve space "${space}": the index-time transform is missing from CONFIG or differs from the shipped block. Operator: add the block of docs/security.md, section 10, to CONFIG verbatim and run "Space: Reindex" in every client; the server re-checks on the next scan or SIGHUP. The instance runs SilverBullet ${s.release ?? "of a release it does not name"}; SilverBullet 3 needs no block, and after a downgrade from it Library/Config goes back to CONFIG first.`;
     }
     return null;
+  }
+
+  /** Whether CONFIG is an ordinary page in the space: unless a scan has seen that the release is 2. */
+  libraryOnly(space: string): boolean {
+    return this.spaces.get(space)?.libraryOnly ?? true;
   }
 
   /** Why rendering is blocked in a space (docs/security.md, section 7), or null. Read by the render tools. */
@@ -157,7 +172,7 @@ export class State {
     const m = s.files.length;
     if (n === 0 && m === 0 && transclusions === 0) return null;
     const parts: string[] = [];
-    if (n > 0) parts.push(`${n} finding(s) on ${pages} page(s) with code outside CONFIG and Library/`);
+    if (n > 0) parts.push(`${n} finding(s) on ${pages} page(s) with code outside ${codePlaces(s.libraryOnly)}`);
     if (transclusions > 0) parts.push(`${transclusions} transclusion(s) of a page that a user who may render there may not read`);
     if (m > 0) parts.push(`${m} file(s) that are not pages and are not on the allowed-files list`);
     return `Rendering is blocked in space "${space}": the last scan found ${parts.join(" and ")}. Operator: read the report page "${this.reportPage}" in that space, then fix or allow; agents may still read and write, and a cleaned page is accepted.`;

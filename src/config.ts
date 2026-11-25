@@ -104,13 +104,13 @@ export function parseFolder(text: string | undefined, fallback: string): string 
 
 /**
  * Why a folder cannot hold proposals or working copies, or null: a name the tools refuse (the rules
- * of `normalizeName`), or a place for code, where the write filter does not apply.
+ * of `normalizeName`), or a place for code on either release, where the write filter does not apply.
  */
 export function folderProblem(folder: string): string | null {
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f\\]/.test(folder)) return "holds a control character or a backslash";
   if (folder.slice(0, -1).split("/").some((segment) => segment === "" || segment === "." || segment === ".." || segment.startsWith("."))) return 'has an empty, "." or dot-prefixed segment';
-  if (isCodePlace(folder) || isCodePlace(folder.slice(0, -1))) return "lies in CONFIG or Library/, where pages are code and the write filter does not apply";
+  if (isCodePlace(folder, false) || isCodePlace(folder.slice(0, -1), false)) return "lies in CONFIG or Library/, where pages are code and the write filter does not apply";
   return null;
 }
 

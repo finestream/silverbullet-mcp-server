@@ -1,14 +1,15 @@
 // The scan (docs/security.md, sections 7 and 8) and the transform check
 // (section 10), as the technical user (`MCP_SCAN_USER`, default `scan`): which spaces are guarded,
-// whether CONFIG holds the shipped transform block, which pages outside
-// CONFIG and Library/ hold code, which files are not pages; the report page
-// per space; the quarantine when the operator chose it.
+// which release the instance runs and, on SilverBullet 2, whether CONFIG holds
+// the shipped transform block, which pages outside Library/ (and CONFIG on
+// SilverBullet 2) hold code, which files are not pages; the report page per
+// space; the quarantine when the operator chose it.
 
-import { checkPage, isCodePlace, type TransclusionCheck, type Verdict, type Violation } from "./filter/filter.ts";
+import { checkPage, codePlaces, FileIndex, isCodePlace, type TransclusionCheck, type Verdict, type Violation } from "./filter/filter.ts";
 import { checkPageLimited, CheckTimeout } from "./filter/check.ts";
 import { compileAllowlist, type Allowlist } from "./filter/allowlist.ts";
 import { pageNameOf, pathMatches, renderersWithoutRead, type AccessList, type Subject } from "./access.ts";
-import { SbError, type SilverBullet, type SbFile } from "./sb.ts";
+import { SbError, majorOf, type SilverBullet, type SbFile } from "./sb.ts";
 import type { Config } from "./config.ts";
 import type { State, SpaceState, Finding, FileFinding } from "./state.ts";
 import type { Log } from "./log.ts";
@@ -29,6 +30,9 @@ local function confine(o)
 end
 tag.define { name = "space-lua", transform = confine }
 tag.define { name = "space-style", transform = confine }`;
+
+/** The major release since which SilverBullet runs space-lua and space-style from Library/ only (docs/facts/execution-model.md, section 8). */
+export const LIBRARY_ONLY_SINCE = 3;
 
 /** Whether a CONFIG page holds the shipped block, verbatim, inside a space-lua fence. */
 export function hasTransform(configSource: string): boolean {
@@ -138,7 +142,7 @@ export class Scanner {
           s.unguardedReason = `the scan failed: ${(e as Error).message}`;
         }
         if (!s.guarded) summary.unguarded.push(space);
-        if (s.guarded && s.transform !== "present") summary.missingTransform.push(space);
+        if (s.guarded && s.transform !== "present" && s.transform !== "not-needed") summary.missingTransform.push(space);
         summary.findings += s.findings.length;
         summary.files += s.files.length;
       }
@@ -169,13 +173,27 @@ export class Scanner {
     s.guarded = true;
     s.unguardedReason = null;
 
-    // The transform in CONFIG.
+    // The transform in CONFIG. SilverBullet 3 loads code from Library/ only and needs none. On a release
+    // that cannot be told both hold: the block is required as on 2, and CONFIG is checked as on 3. On 2
+    // only CONFIG counts: it does not run Library/Config before the initial index, so a block there (as
+    // a downgrade leaves it) comes too late.
     try {
-      const cfg = await sb.read(token, space, "CONFIG.md");
-      s.transform = hasTransform(cfg.body.toString("utf8")) ? "present" : "missing";
+      s.release = await sb.version(token, space);
     } catch (e) {
-      if (e instanceof SbError && e.status === 404) s.transform = "missing";
-      else throw e;
+      // A failure says nothing about the release: the last one named still holds.
+      log.warn("scan.release.failed", { space, error: (e as Error).message, release: s.release });
+    }
+    const major = majorOf(s.release);
+    s.libraryOnly = major === null || major >= LIBRARY_ONLY_SINCE;
+    if (major !== null && s.libraryOnly) s.transform = "not-needed";
+    else {
+      try {
+        const cfg = await sb.read(token, space, "CONFIG.md");
+        s.transform = hasTransform(cfg.body.toString("utf8")) ? "present" : "missing";
+      } catch (e) {
+        if (e instanceof SbError && e.status === 404) s.transform = "missing";
+        else throw e;
+      }
     }
 
     // The review library, for the proposal tools; a page that cannot be read refuses them only.
@@ -187,7 +205,7 @@ export class Scanner {
       else s.library = { version: null, format: null, problem: `the library page ${LIBRARY_PAGE} cannot be read: ${(e as Error).message}` };
     }
 
-    // Pages outside CONFIG and Library/, and files that are not pages.
+    // Pages outside the code places, and files that are not pages.
     const allow = this.d.allowlist();
     const files = await sb.list(token, space);
     const findings: Finding[] = [];
@@ -196,9 +214,10 @@ export class Scanner {
     const allowed = this.d.allowedFiles().filter((a) => a.space === space || a.space === "*");
     let pagesChecked = 0;
     const reportFile = `${config.reportPage}.md`;
+    const index = new FileIndex(files.map((f) => f.name));
     for (const f of files) {
       const page = pageNameOf(f.name);
-      if (isCodePlace(page)) continue;
+      if (isCodePlace(page, s.libraryOnly)) continue;
       if (!f.name.endsWith(".md")) {
         if (!allowed.some((a) => pathMatches(a.path, f.name))) nonPages.push({ file: f.name, contentType: f.contentType, size: f.size });
         continue;
@@ -208,7 +227,7 @@ export class Scanner {
       pagesChecked++;
       const read = await sb.read(token, space, f.name);
       const source = read.body.toString("utf8");
-      const transclusion = this.transclusionCheck(space, page);
+      const transclusion = this.transclusionCheck(space, page, index);
       let verdict: Verdict;
       try {
         verdict = await checkPageLimited(source, allow, transclusion);
@@ -252,15 +271,30 @@ export class Scanner {
    * The scan has no writer to ask about: a transclusion is a finding when a user who may render
    * the page (`x`) may not read its target (`r`), whoever wrote the page (docs/security.md, section 7).
    */
-  private transclusionCheck(space: string, page: string): TransclusionCheck | undefined {
+  private transclusionCheck(space: string, page: string, index: FileIndex): TransclusionCheck | undefined {
     const acl = this.d.accessList?.();
     const subjects = this.d.subjects?.() ?? [];
     if (!acl) return undefined;
+    const renderers = subjects.filter((s) => acl.rights(s.user, s.groups, space, page).has("x"));
+    const judge = (path: string) => {
+      const who = renderersWithoutRead(acl, renderers, space, page, path);
+      return who.length ? `${who.join(", ")} may render this page (x) and may not read ${pageNameOf(path)}` : null;
+    };
+    // The files a name may stand for are judged once, however the page spells it.
+    const judged = new Map<readonly string[], string | null>();
     return {
       page,
-      denied(target) {
-        const who = renderersWithoutRead(acl, subjects, space, page, target);
-        return who.length ? `${who.join(", ")} may render this page (x) and may not read ${target}` : null;
+      denied(path, lookup) {
+        const why = judge(path);
+        if (why !== null || !lookup || renderers.length === 0) return why;
+        const others = index.others(path);
+        let other = judged.get(others);
+        if (other === undefined) {
+          other = null;
+          for (const file of others) if ((other = judge(file)) !== null) break;
+          judged.set(others, other);
+        }
+        return other;
       },
     };
   }
@@ -282,32 +316,47 @@ const fenceFor = (text: string) => "`".repeat(Math.max(3, (text.match(/`+/g) ?? 
 
 /**
  * Neutralises the violations in place, keeping the text visible: an executable fence becomes a
- * `lua` fence, a directive is wrapped in a code span (or a fenced block when it spans a blank
- * line, which would end a code span), a baked marker loses its `#`, and the page is tagged
- * #quarantined.
+ * `lua` fence, a baked marker loses its `#`, anything else is wrapped in a code span (or a fenced
+ * block when it spans a blank line, which would end a code span), and the page is tagged
+ * #quarantined. Violations may lie in one another and overlap: those that touch are taken together,
+ * and wrapped as one when one of them is wrapped.
  */
 export function quarantine(source: string, violations: Violation[]): string {
-  const ranges = [...violations].sort((a, b) => b.from - a.from);
-  let out = source;
-  let lastFrom = Infinity;
-  for (const v of ranges) {
-    if (v.from >= lastFrom) continue; // the same directive reported twice
-    lastFrom = v.from;
-    const piece = out.slice(v.from, v.to);
-    let replacement: string;
-    if (v.rule === "fence" || v.rule === "fence-hidden") {
-      replacement = piece.replace(/^([ \t]{0,3}(?:`{3,}|~{3,})[ \t]*)(space-lua|space-config|space-style)\b[^\n]*/, "$1lua");
-    } else if (piece.startsWith("<!--#lua")) {
-      replacement = "<!-- #lua" + piece.slice("<!--#lua".length);
-    } else if (/\n[ \t]*\n/.test(piece)) {
-      const fence = fenceFor(piece);
-      replacement = `\n${fence}text\n${piece}\n${fence}\n`;
-    } else {
-      const ticks = fenceFor(piece).slice(2); // one more backtick than any run inside, at least one
-      replacement = `${ticks}${piece}${ticks}`;
-    }
-    out = out.slice(0, v.from) + replacement + out.slice(v.to);
+  type Cluster = { from: number; to: number; parts: Violation[] };
+  const clusters: Cluster[] = [];
+  for (const v of [...violations].sort((a, b) => a.from - b.from)) {
+    const last = clusters[clusters.length - 1];
+    if (last && v.from <= last.to) {
+      last.to = Math.max(last.to, v.to);
+      last.parts.push(v);
+    } else clusters.push({ from: v.from, to: v.to, parts: [v] });
   }
+  const isFence = (v: Violation) => v.rule === "fence" || v.rule === "fence-hidden";
+  const isBaked = (v: Violation) => source.startsWith("<!--#lua", v.from);
+  let out = "";
+  let done = 0;
+  for (const c of clusters) {
+    let piece = source.slice(c.from, c.to);
+    // Fences and markers first, the last one first, so that the offsets of those before it still hold.
+    const inPlace = new Map(c.parts.filter((v) => isFence(v) || isBaked(v)).map((v) => [v.from - c.from, v]));
+    for (const [at, v] of [...inPlace].sort(([a], [b]) => b - a)) {
+      const rest = piece.slice(at);
+      const neutral = isFence(v) ? rest.replace(/^([ \t]{0,3}(?:`{3,}|~{3,})[ \t]*)(space-lua|space-config|space-style)\b[^\n]*/, "$1lua") : "<!-- #lua" + rest.slice("<!--#lua".length);
+      piece = piece.slice(0, at) + neutral;
+    }
+    if (c.parts.some((v) => !isFence(v) && !isBaked(v))) {
+      if (/\n[ \t]*\n/.test(piece)) {
+        const fence = fenceFor(piece);
+        piece = `\n${fence}text\n${piece}\n${fence}\n`;
+      } else {
+        const ticks = fenceFor(piece).slice(2); // one more backtick than any run inside, at least one
+        piece = `${ticks}${piece}${ticks}`;
+      }
+    }
+    out += source.slice(done, c.from) + piece;
+    done = c.to;
+  }
+  out += source.slice(done);
   if (!/(^|\s)#quarantined(\s|$)/.test(out)) out = out.replace(/\s*$/, "\n\n#quarantined\n");
   return out;
 }
@@ -348,7 +397,8 @@ export function renderReport(space: string, s: SpaceState, state: State, config:
   lines.push(`* Space: \`${space}\``);
   lines.push(`* Serving: ${refusal ? `**no**. ${cell(refusal)}` : "yes"}`);
   lines.push(`* Rendering: ${block ? `**blocked**. ${cell(block)}` : "available where the access list grants x"}`);
-  lines.push(`* Transform block in CONFIG: ${s.transform === "present" ? "present" : "**missing**"}`);
+  lines.push(`* SilverBullet: ${s.release ? cell(s.release) : "release not named"}`);
+  lines.push(`* Transform block in CONFIG: ${s.transform === "present" ? "present" : s.transform === "not-needed" ? "not needed (SilverBullet 3 loads code from Library/ only)" : "**missing**"}`);
   lines.push(`* Proposals library: ${s.library.problem ? `**proposal tools unavailable**: ${cell(s.library.problem)}` : `version ${s.library.version}, proposal tools available`}`);
   lines.push(`* Allowlist: ${state.allowlist.ok ? "valid" : `**invalid**: ${cell(state.allowlist.problems.join("; "))}`}`);
   lines.push(`* Last scan: ${s.lastScan?.toISOString() ?? "never"}, ${s.scanMs} ms, ${s.pagesChecked} page(s) checked, ${fileCount} file(s) seen`);
@@ -359,7 +409,7 @@ export function renderReport(space: string, s: SpaceState, state: State, config:
     lines.push("| Page | Line | Rule | Detail |", "|---|---|---|---|");
     for (const f of s.findings) lines.push(`| ${pageRef(f.page)} | ${f.line} | ${cell(f.rule)} | ${cell(f.detail)} |`);
   } else if (!state.allowlist.ok) lines.push("Pages were not checked: the allowlist is invalid, and the server refuses to serve.");
-  else lines.push("None: every page outside CONFIG and Library/ is data, and none transcludes what a user who may render it may not read.");
+  else lines.push(`None: every page outside ${codePlaces(s.libraryOnly)} is data, and none transcludes what a user who may render it may not read.`);
   lines.push("");
   if (s.quarantined.length) {
     lines.push(`## Quarantined in this run (${s.quarantined.length})`, "");

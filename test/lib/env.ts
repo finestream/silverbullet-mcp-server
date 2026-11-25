@@ -7,6 +7,7 @@
 // that has the Proposals library installed (test/library/).
 
 import { existsSync, readFileSync } from "node:fs";
+import { majorOf } from "../../src/sb.ts";
 import { client } from "./sb.ts";
 
 export const STATE_DIR = new URL("../.state/", import.meta.url);
@@ -31,7 +32,7 @@ export function loadEnv(): Record<string, string> {
       if (m) out[m[1]] = m[2];
     }
   }
-  for (const k of ["SB_URL", "SB_TOKEN_ADMIN", "SB_TOKEN_ALICE", "SB_TOKEN_BOB", "SB_TOKEN_DORA", "SB_TOKEN_SCAN", "SB_USER_PASSWORD", "SB_ADMIN_PASSWORD"]) {
+  for (const k of ["SB_URL", "SB_RELEASE", "SB_TOKEN_ADMIN", "SB_TOKEN_ALICE", "SB_TOKEN_BOB", "SB_TOKEN_DORA", "SB_TOKEN_SCAN", "SB_USER_PASSWORD", "SB_ADMIN_PASSWORD"]) {
     if (process.env[k]) out[k] = process.env[k]!;
   }
   return out;
@@ -46,6 +47,16 @@ function need(key: string): string {
 
 export const SB_URL = loadEnv().SB_URL ?? DEFAULT_URL;
 export const sb = client(SB_URL);
+
+/** The release of the instance as the bootstrap saw it (SB_RELEASE), and what the checks tell apart by it. */
+export const RELEASE = loadEnv().SB_RELEASE ?? "";
+/** SilverBullet 3 and newer: code runs from Library/ only, the configuration is Library/Config. */
+export const V3 = (majorOf(RELEASE) ?? 2) >= 3;
+/** The configuration page of this release. */
+export const CONFIG_PAGE = V3 ? "Library/Config" : "CONFIG";
+/** A reason to skip a check of the other line of releases. */
+export const ONLY_2 = V3 ? "SilverBullet 2 only" : false;
+export const ONLY_3 = V3 ? false : "SilverBullet 3 only";
 
 /** Tokens, resolved lazily so that importing this module without an instance does not throw. */
 export const T = {

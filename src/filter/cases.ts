@@ -12,7 +12,10 @@ export type Case = { id: string; name: string; expect: "accept" | "reject"; page
  */
 export const matrixReader: TransclusionCheck = {
   page: "Notes/Matrix",
-  denied: (target) => (target === "CONFIG" || target.startsWith("Private/") ? `no r on ${target}` : null),
+  denied: (path) => {
+    const name = path.replace(/\.md$/, "");
+    return name === "CONFIG" || name.startsWith("Private/") ? `no r on ${name}` : null;
+  },
 };
 
 const fence = (lang: string, body: string) => "```" + lang + "\n" + body + "\n```\n";

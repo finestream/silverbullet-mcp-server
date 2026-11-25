@@ -9,7 +9,7 @@ import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { startServer, connect, BEARERS, DEFAULT_ACCESS_LIST, unique, type RunningServer, type McpClient } from "./harness.ts";
-import { sb, T, until } from "../lib/env.ts";
+import { sb, T, until, V3 } from "../lib/env.ts";
 import { luaString } from "../lib/lua.ts";
 import { buildLibrary } from "../../scripts/build-library.ts";
 import { LIBRARY_PAGE, parseProposal } from "../../src/proposal.ts";
@@ -152,16 +152,21 @@ test("propose-*: what could not be applied, or needs no proposal, is refused and
     ["edits that change nothing", edit({ edits: [{ oldText: "two", newText: "two" }] }), /change nothing/],
     ["a target in the proposal folder", edit({ filename: "Proposals/Some proposal" }), /lies in the proposal folder/],
     ["a target among the working copies", edit({ filename: "Working copies/Some proposal" }), /folder of the working copies/],
-    ["a target in Library/", edit({ filename: LIBRARY_PAGE }), /CONFIG or lies in Library\//],
+    ["a target in Library/", edit({ filename: LIBRARY_PAGE }), /lies in Library\//],
     ["the report page as target", edit({ filename: "MCP Server" }), /is the server's report page/],
     ["a proposal name with a file extension", edit({ name: "x.csv" }), /ends in a file extension/],
-    ["a move into Library/", alice.call("propose-move", { space: SPACE, filename: page, newName: "Library/Moved", expectedRevision: revision, reason: "r", name: proposalName("Refused") }), /CONFIG or lies in Library\//],
+    ["a move into Library/", alice.call("propose-move", { space: SPACE, filename: page, newName: "Library/Moved", expectedRevision: revision, reason: "r", name: proposalName("Refused") }), /lies in Library\//],
     ["a move onto a page that exists", alice.call("propose-move", { space: SPACE, filename: page, newName: "index", expectedRevision: revision, reason: "r", name: proposalName("Refused") }), /exists already; a move cannot replace a page/],
     ["a move into the proposal folder", alice.call("propose-move", { space: SPACE, filename: page, newName: "Proposals/Moved", expectedRevision: revision, reason: "r", name: proposalName("Refused") }), /lies in the proposal folder/],
     ["a move onto a page the user may not read", alice.call("propose-move", { space: SPACE, filename: page, newName: "Hidden/Existing", expectedRevision: revision, reason: "r", name: proposalName("Refused") }), /Denied by the access list: user "alice" has no "r" on gamma\/Hidden\/Existing/],
     ["a move to a free name the user may not read", alice.call("propose-move", { space: SPACE, filename: page, newName: "Hidden/Free", expectedRevision: revision, reason: "r", name: proposalName("Refused") }), /Denied by the access list: user "alice" has no "r" on gamma\/Hidden\/Free/],
     ["no w where proposals live", bob.call("propose-edit", { space: SPACE, filename: page, expectedRevision: revision, reason: "r", name: proposalName("Refused"), edits: [{ oldText: "two", newText: "x" }] }), /Denied by the access list: user "bob" has no "w" on gamma\/Proposals\//],
   ];
+  // CONFIG is a place for code on SilverBullet 2 only.
+  if (V3) {
+    const r = await alice.call("propose-move", { space: SPACE, filename: page, newName: "CONFIG", expectedRevision: revision, reason: "r", name: proposalName("To CONFIG") });
+    assert.match(r.text, /Denied by the access list: user "alice" has no "r" on gamma\/CONFIG/, "only the access list keeps it");
+  } else cases.push(["CONFIG as target", edit({ filename: "CONFIG" }), /The target CONFIG is CONFIG or lies in Library\//]);
   for (const [what, call, expected] of cases) {
     const r = await call;
     assert.equal(r.isError, true, `${what}: ${r.text}`);

@@ -7,16 +7,20 @@
 
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
-import { sb, T, S, sleep } from "../lib/env.ts";
+import { sb, T, S, V3, sleep } from "../lib/env.ts";
 import { AWAIT_INDEX } from "../lib/lua.ts";
 import { SHIPPED_ALLOWLIST } from "../../src/filter/allowlist.ts";
 import { NO_PAGE_DATA, OBJECT_FUNCTIONS, ROW_FILTER, ROW_FUNCTIONS, RESTORE_SCRIPT, luaString, navigateScript, renderScript, rowRulesLua } from "../../src/render.ts";
 import { compileAccessList, parseAccessList, rowRules } from "../../src/access.ts";
 
+/** The filtered functions this release has: libraryPages and data came with 3.0. */
+const ROWS = ROW_FUNCTIONS.filter((f) => V3 || (f !== "libraryPages" && f !== "data"));
 const HIDDEN = "RowCheck/Hidden";
 const OPEN = "RowCheck/Open";
 const TARGET = "RowCheck/Target";
 const ANCHOR = "sbmcp_rowcheck";
+/** A data block, a row of index.data since 3.0. */
+const DATA = "\n```#rowcheckdata\nvalue: rowcheck data\n```\n";
 /** The rules of a reader who may read everything but RowCheck/Hidden. */
 const RULES = { exact: new Map([[HIDDEN, false]]), folders: new Map<string, boolean>(), root: true };
 /** What the index holds of the check's pages: the page rows' modified times and the number of rows of each kind; `complete` when each page and the document has its rows. */
@@ -53,7 +57,7 @@ const shown = async (script: string) => {
 };
 
 before(async () => {
-  await sb.write(T.admin, S.gamma, `${HIDDEN}.md`, `---\ntags: rowcheck\n$ref: ${ANCHOR}\n---\n# Hidden heading\n\n* [ ] rowcheck task hidden [[${TARGET}]]\n* rowcheck item hidden #rowcheck\n\nMentions [[${TARGET}]] and [[RowCheck/Aspiring]] hidden. #rowcheck\n\n| a | b |\n|---|---|\n| rowcheck | 1 |\n\n* rowcheck forged item hidden [page: ${OPEN}]\n* [ ] rowcheck forged page hidden [tag: page] [name: ${OPEN}]\n`);
+  await sb.write(T.admin, S.gamma, `${HIDDEN}.md`, `---\ntags: rowcheck\n$ref: ${ANCHOR}\n---\n# Hidden heading\n\n* [ ] rowcheck task hidden [[${TARGET}]]\n* rowcheck item hidden #rowcheck\n\nMentions [[${TARGET}]] and [[RowCheck/Aspiring]] hidden. #rowcheck\n\n| a | b |\n|---|---|\n| rowcheck | 1 |\n\n* rowcheck forged item hidden [page: ${OPEN}]\n* [ ] rowcheck forged page hidden [tag: page] [name: ${OPEN}]\n${DATA}`);
   await sb.write(T.admin, S.gamma, `${OPEN}.md`, `* [ ] rowcheck task open\n\nMentions [[${TARGET}]] openly.\n`);
   await sb.write(T.admin, S.gamma, `${TARGET}.md`, `Target.\n\n\${template.each(query[[from t = index.tasks() where string.find(t.name, "rowcheck", 1, true) ~= nil]], templates.taskItem)}\n`);
   await sb.write(T.admin, S.gamma, "RowCheck/data.csv", "a,b\n1,2\n");
@@ -90,7 +94,7 @@ test("rows: every index function of the shipped allowlist is filtered or classif
   const classified = new Set([...ROW_FUNCTIONS, ...OBJECT_FUNCTIONS, ...NO_PAGE_DATA]);
   assert.deepEqual(allowlisted.filter((f) => !classified.has(f)), [], "an allowlisted index function the row filter does not know");
   const types = (await lua(`local out = {} for _, f in ipairs({${[...classified].map((f) => JSON.stringify(f)).join(", ")}}) do out[f] = type(index[f]) end return out`)) as Record<string, string>;
-  for (const f of classified) assert.equal(types[f], "function", `index.${f} exists`);
+  for (const f of classified) assert.equal(types[f] ?? "nil", !ROW_FUNCTIONS.includes(f) || ROWS.includes(f) ? "function" : "nil", `index.${f} exists`);
 });
 
 test("rows: the functions classified as carrying no page data return nothing of a page", async () => {
@@ -109,7 +113,7 @@ return out`)) as Record<string, unknown>;
 });
 
 test("rows: every row of each filtered function names its page under the fields the filter reads; the rows of the check's pages name them; a row whose attributes name another page does not pass as it", async () => {
-  const calls: Array<[string, string]> = ROW_FUNCTIONS.map((f) => [f, f === "subPages" ? `index.subPages("RowCheck")` : f === "tag" || f === "objects" ? `index.${f}("task")` : `index.${f}()`]);
+  const calls: Array<[string, string]> = ROWS.map((f) => [f, f === "subPages" ? `index.subPages("RowCheck")` : f === "tag" || f === "objects" ? `index.${f}("task")` : `index.${f}()`]);
   const r = (await lua(`${ROW_FILTER}
 local out = {}
 ${calls.map(([f, call]) => `do
@@ -122,15 +126,15 @@ return out`)) as Record<string, { all: number; without: number; mine: number; fo
     assert.ok(c && c.all > 0, `index.${f} returns rows: ${JSON.stringify(c)}`);
     assert.equal(c.without, 0, `index.${f}: every row has a page (${c.without} of ${c.all} without)`);
     assert.equal(c.forged, 0, `index.${f}: a row whose attributes name another page passes as that page`);
-    // metaPages lists only meta pages (Library/), none of the check's.
-    if (f !== "metaPages") assert.ok(c.mine > 0, `index.${f}: the check's pages show under their own names`);
+    // metaPages and libraryPages list only pages of Library/, none of the check's.
+    if (f !== "metaPages" && f !== "libraryPages") assert.ok(c.mine > 0, `index.${f}: the check's pages show under their own names`);
   }
 });
 
 test("rows: every row equals its getObjectByRef lookup under its own page, field for field (the filter keeps a row only then)", async () => {
   const tags = ["task", "item", "page", "project", "rowcheck"];
   const calls: Array<[string, string]> = [
-    ...ROW_FUNCTIONS.filter((f) => f !== "tag" && f !== "objects").map((f): [string, string] => [f, f === "subPages" ? `index.subPages("RowCheck")` : `index.${f}()`]),
+    ...ROWS.filter((f) => f !== "tag" && f !== "objects").map((f): [string, string] => [f, f === "subPages" ? `index.subPages("RowCheck")` : `index.${f}()`]),
     ...tags.flatMap((t): Array<[string, string]> => [[`tag(${t})`, `index.tag(${JSON.stringify(t)})`], [`objects(${t})`, `index.objects(${JSON.stringify(t)})`]]),
   ];
   const r = (await lua(`${ROW_FILTER}

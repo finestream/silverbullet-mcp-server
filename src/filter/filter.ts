@@ -2,12 +2,15 @@
 // allowlist, accepts the page or returns every reason it holds code.
 //
 // Markdown is parsed with @lezer/markdown (the parser SilverBullet builds on);
-// `${...}` directives are found the way SilverBullet's own inline parser finds
+// `${...}` directives are found the way SilverBullet's own inline parsers find
 // them (client/markdown_parser/parser.ts, LuaDirectives): `${` outside code,
-// then brace balancing. Each directive body is parsed with the vendored Lua
-// parser exactly as SilverBullet does it: wrapped as `_(<body>)`, and the
-// rules walk the lezer tree. The parser files under vendor/silverbullet/ are
-// SilverBullet's own (MIT, see the LICENSE.md there).
+// up to the end that 2.12 (brace balancing) or 3.0 (the same, outside Lua
+// strings and comments) takes. Where a directive starts depends on what the
+// block around it holds, so every `${` is judged on its own. Each directive
+// body is parsed with the vendored Lua parser exactly as SilverBullet does it:
+// wrapped as `_(<body>)`, and the rules walk the lezer tree. The parser files
+// under vendor/silverbullet/ are SilverBullet's own (MIT, see the LICENSE.md
+// there).
 
 import { parser as luaParser } from "./vendor/silverbullet/parse-lua.js";
 import { parser as mdParser } from "@lezer/markdown";
@@ -44,6 +47,9 @@ const TAG_ARGUMENT: Record<string, number> = {
   "index.objects": 0,
   "index.contentPages": 0,
   "index.pages": 0,
+  "index.libraryPages": 0,
+  "index.metaPages": 0,
+  "index.data": 0,
   "index.getObjectByRef": 1,
 };
 
@@ -59,8 +65,8 @@ const SCRIPT_TAGS = new Set(["space-lua", "space-style"]);
 export type TransclusionCheck = {
   /** The name of the page being checked, without `.md`. */
   page: string;
-  /** Why the page or file `target` may not be transcluded here, or null when it may. */
-  denied(target: string): string | null;
+  /** Why the file at `path` may not be transcluded here, or null when it may; with `lookup` another file may be shown in its place (`FileIndex`). */
+  denied(path: string, lookup: boolean): string | null;
 };
 
 /** The rule of a transclusion whose target its reader may not read: not code, so the refusals word it apart. */
@@ -120,32 +126,47 @@ const MAX_READINGS = 32;
 /** A URL with a scheme, or a protocol-relative one: not a file of the space. */
 const EXTERNAL = /^([A-Za-z][A-Za-z0-9+.-]*:|\/\/)/;
 
+/** The file a name stands for, as SilverBullet reads it (`normalizePath`): a name without an extension is a page. */
+function filePath(name: string): string {
+  return /[^]\.[A-Za-z0-9]+$/.test(name) ? name : `${name}.md`;
+}
+
 /**
- * The pages or files a transclusion may resolve to, as names the access list is matched against.
- * SilverBullet 2.12.1 (measured, docs/security.md, section 5) takes `Page`, `/Page`, `^Page` and
- * `Page.md`, and cuts a heading (`#`), a position (`@`) or an anchor (`$`); the image form also
- * resolves `..` against the page's folder. Where a character could be part of the name or start
- * a suffix, both readings are returned, and the caller requires every one of them to be readable.
+ * A file a transclusion may stand for: its full path, and whether SilverBullet, when there is no
+ * such file, looks for others in its place (`FileIndex`).
  */
-export function transclusionTargets(raw: string, page: string, image: boolean): string[] {
-  const out = new Set<string>();
+export type TransclusionTarget = { path: string; lookup: boolean };
+
+/**
+ * The files a transclusion may resolve to, as full paths.
+ * SilverBullet (2.12.1 and 3.0.0, measured, docs/security.md, section 5) takes `Page`, `/Page`, `^Page` and
+ * `Page.md`, and cuts a heading (`#`), a position (`@`) or an anchor (`$`); the image form also
+ * resolves `..` against the page's folder, and is taken as it is. Where a character could be part of
+ * the name or start a suffix, both readings are returned, and the caller requires every one of them
+ * to be readable.
+ */
+export function transclusionTargets(raw: string, page: string, image: boolean): TransclusionTarget[] {
+  const out = new Map<string, TransclusionTarget>();
   const add = (name: string) => {
     // No file has a name this long; what the filter cannot read as a name is refused as one.
     if (name.length > MAX_TARGET) name = name.slice(0, MAX_TARGET);
-    // The shortest reading first: it is the one SilverBullet takes unless the character is part of the name.
+    // The shortest reading first: it is the one SilverBullet takes.
     const cuts: number[] = [];
     for (let i = 0; i < name.length && cuts.length < MAX_READINGS; i++) if (name[i] === "#" || name[i] === "@" || name[i] === "$") cuts.push(i);
     if (!name.startsWith("#")) cuts.push(name.length); // `#Heading` alone is the page itself
-    for (const cut of cuts) {
-      const candidate = name.slice(0, cut).replace(/\.md$/, "");
-      if (candidate && candidate !== page) out.add(candidate);
+    for (const [i, cut] of cuts.entries()) {
+      const reading = name.slice(0, cut);
+      const path = filePath(reading);
+      if (reading === "" || path === `${page}.md`) continue;
+      const lookup = !image && i === 0;
+      if (lookup || !out.has(path)) out.set(path, { path, lookup });
     }
   };
   if (!image) {
     const name = raw.split("|")[0].replace(/^\^/, "").replace(/^\/+/, "");
     add(name);
     if (name.trim() !== name) add(name.trim());
-    return [...out];
+    return [...out.values()];
   }
   if (EXTERNAL.test(raw)) return [];
   const readings = new Set([raw]);
@@ -165,12 +186,138 @@ export function transclusionTargets(raw: string, page: string, image: boolean): 
       add(segments.join("/"));
     }
   }
-  return [...out];
+  return [...out.values()];
 }
 
-/** Pages the filter does not apply to: where code belongs (docs/security.md, section 2). */
-export function isCodePlace(page: string): boolean {
-  return page === "CONFIG" || page === "CONFIG.md" || page.startsWith("Library/");
+/**
+ * The files of a space as SilverBullet looks a `![[target]]` up among them (`resolvePath` of 2.12.1 and
+ * 3.0.0; measured in the editor of both and in the expansion of 3.0.0): the file of exactly that path,
+ * otherwise every file whose path ends in it, in any case: `![[deep]]` shows `Folder/Deep`. Which of
+ * several it takes depends on the page, so the caller requires all of them to be readable.
+ */
+export class FileIndex {
+  private readonly paths: ReadonlySet<string>;
+  /** Every end of every path, from a `/` on, in lower case. */
+  private readonly ends = new Map<string, string[]>();
+
+  constructor(paths: Iterable<string>) {
+    this.paths = new Set(paths);
+    for (const path of this.paths) {
+      const lower = path.toLowerCase();
+      for (let i = 0; ; ) {
+        const end = lower.slice(i);
+        const files = this.ends.get(end);
+        if (files) files.push(path);
+        else this.ends.set(end, [path]);
+        const slash = lower.indexOf("/", i);
+        if (slash < 0) break;
+        i = slash + 1;
+      }
+    }
+  }
+
+  has(path: string): boolean {
+    return this.paths.has(path);
+  }
+
+  /** The files taken for `path` when there is none of exactly that path; the same array for every spelling. */
+  others(path: string): readonly string[] {
+    return this.paths.has(path) ? NO_FILES : (this.ends.get(path.toLowerCase()) ?? NO_FILES);
+  }
+}
+const NO_FILES: readonly string[] = [];
+
+/**
+ * Pages the filter does not apply to: where code belongs (docs/security.md, section 2). SilverBullet 3
+ * runs code from Library/ only (`libraryOnly`); there CONFIG is a page like any other.
+ */
+export function isCodePlace(page: string, libraryOnly: boolean): boolean {
+  return page.startsWith("Library/") || (!libraryOnly && (page === "CONFIG" || page === "CONFIG.md"));
+}
+
+/** The code places as the messages name them. */
+export const codePlaces = (libraryOnly: boolean) => (libraryOnly ? "Library/" : "CONFIG and Library/");
+
+/** Steps the directive scan may still take on a page; below zero it gives up. */
+type Budget = { left: number };
+
+/** The index after the `}` that closes the `${` at `start` by counting braces, as 2.12 does and 3.0 falls back to; -1 without one. */
+function braceEnd(text: string, start: number, budget: Budget): number {
+  let depth = 0;
+  for (let i = start + 1; i < text.length; i++) {
+    if (--budget.left < 0) return -1;
+    if (text[i] === "{") depth++;
+    else if (text[i] === "}" && --depth === 0) return i + 1;
+  }
+  return -1;
+}
+
+/** `query [[ … ]]` holds Lua tokens, not a long string. */
+const QUERY_BEFORE = /(^|[^\w.:])query\s*$/;
+
+/**
+ * The same end as 3.0 finds it (client/space_lua/directive_scan.ts at tag 3.0.0): braces inside Lua
+ * strings, long brackets and comments do not count; -1 when the body does not scan as Lua.
+ */
+function luaEnd(text: string, start: number, budget: Budget): number {
+  let depth = 0;
+  // Past the long bracket that opens at `at`; -1: none opens there, -2: it never closes.
+  const longBracket = (at: number): number => {
+    const m = /^\[(=*)\[/.exec(text.slice(at, at + 32));
+    if (!m) return -1;
+    const close = `]${m[1]}]`;
+    const end = text.indexOf(close, at + m[0].length);
+    budget.left -= (end < 0 ? text.length : end) - at;
+    return end < 0 ? -2 : end + close.length;
+  };
+  for (let i = start + 1; i < text.length; ) {
+    if (--budget.left < 0) return -1;
+    const c = text[i];
+    if (c === "{") {
+      depth++;
+      i++;
+    } else if (c === "}") {
+      i++;
+      if (--depth === 0) return i;
+    } else if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < text.length && text[j] !== c && text[j] !== "\n") {
+        j += text[j] === "\\" ? 2 : 1;
+        budget.left--;
+      }
+      if (text[j] !== c) return -1;
+      i = j + 1;
+    } else if (c === "[") {
+      if (text[i + 1] === "[" && QUERY_BEFORE.test(text.slice(Math.max(start, i - 64), i))) {
+        i += 2;
+        continue;
+      }
+      const after = longBracket(i);
+      if (after === -2) return -1;
+      i = after > 0 ? after : i + 1;
+    } else if (c === "-" && text[i + 1] === "-") {
+      const after = longBracket(i + 2);
+      if (after === -2) return -1;
+      const newline = after > 0 ? after : text.indexOf("\n", i);
+      i = newline < 0 ? text.length : newline;
+    } else i++;
+  }
+  return -1;
+}
+
+/**
+ * The bodies a `${` at `start` may have: by the end 2.12 takes and by the one 3.0 takes, and, as 3.0
+ * reads a directive in a table cell, with `\|` for `|`. Empty when neither release finds an end.
+ */
+function directiveBodies(text: string, start: number, budget: Budget): Array<{ body: string; to: number }> {
+  const out: Array<{ body: string; to: number }> = [];
+  for (const to of new Set([braceEnd(text, start, budget), luaEnd(text, start, budget)])) {
+    if (to < 0) continue;
+    const body = text.slice(start + 2, to - 1);
+    out.push({ body, to });
+    if (body.includes("\\|")) out.push({ body: body.replaceAll("\\|", "|"), to });
+  }
+  return out;
 }
 
 /**
@@ -192,13 +339,24 @@ export function checkPage(source: string, allow: Allowlist, transclusion?: Trans
 export function verdictOf(source: string, analysis: Analysis, transclusion?: TransclusionCheck): Verdict {
   const violations = [...analysis.violations];
   if (transclusion) {
+    // A page may hold the same transclusion thousands of times: every text and every file is judged once.
+    const byText = new Map<string, string | null>();
+    const byTarget = new Map<string, string | null>();
+    const judged = (key: string, known: Map<string, string | null>, judge: () => string | null) => {
+      let why = known.get(key);
+      if (why === undefined) known.set(key, (why = judge()));
+      return why;
+    };
+    const denied = ({ path, lookup }: TransclusionTarget) => judged(`${lookup}\n${path}`, byTarget, () => transclusion.denied(path, lookup));
     for (const t of analysis.transclusions) {
-      for (const target of transclusionTargets(t.raw, transclusion.page, t.image)) {
-        const why = transclusion.denied(target);
-        if (!why) continue;
-        violations.push({ rule: TRANSCLUSION_RULE, detail: `${source.slice(t.from, Math.min(t.to, t.from + 60))}: ${why}`, line: t.line, from: t.from, to: t.to });
-        break; // one reason per transclusion
-      }
+      const why = judged(`${t.image}\n${t.raw}`, byText, () => {
+        for (const target of transclusionTargets(t.raw, transclusion.page, t.image)) {
+          const reason = denied(target);
+          if (reason !== null) return reason; // one reason per transclusion
+        }
+        return null;
+      });
+      if (why !== null) violations.push({ rule: TRANSCLUSION_RULE, detail: `${source.slice(t.from, Math.min(t.to, t.from + 60))}: ${why}`, line: t.line, from: t.from, to: t.to });
     }
   }
   return { ok: violations.length === 0, violations, directives: analysis.directives };
@@ -243,31 +401,33 @@ export function analysePage(source: string, allow: Allowlist): Analysis {
     }
   }
 
-  // Directives: `${` outside code, brace-balanced like SilverBullet's parser. SilverBullet's parser
-  // scans to the end of the text for every `${` that never closes, which is quadratic; the filter
-  // spends at most a few times the page's length on it and refuses the page beyond that.
+  // Directives: `${` outside code, up to the end either release takes; one that never closes is plain
+  // text. SilverBullet looks for the end within the block, the filter in the whole page, so what the
+  // filter takes for a long directive may be several, or text with a directive inside: every `${` is
+  // checked, inside another one too. The search is quadratic; the filter spends at most a few times
+  // the page's length on it and refuses the page beyond that.
   let directives = 0;
-  let budget = 64 * source.length + 1_000_000;
+  const budget: Budget = { left: 64 * source.length + 1_000_000 };
   const inCode = (pos: number) => codeRanges.some(([a, b]) => pos >= a && pos < b);
   for (let pos = source.indexOf("${"); pos !== -1; pos = source.indexOf("${", pos + 2)) {
     if (inCode(pos)) continue;
-    let depth = 0, len = 0;
-    loop: for (; pos + len < source.length; len++) {
-      if (--budget < 0) {
-        violations.push({ rule: "too-complex", detail: "too many unclosed ${ for the filter to check", line: lineOf(pos), from: pos, to: pos + 2 });
-        return { violations, directives, transclusions: [] };
-      }
-      switch (source[pos + len]) {
-        case "{": depth++; break;
-        case "}": depth--; if (depth === 0) break loop; break;
+    const bodies = directiveBodies(source, pos, budget);
+    if (budget.left < 0) {
+      violations.push({ rule: "too-complex", detail: "too many ${ for the filter to check", line: lineOf(pos), from: pos, to: pos + 2 });
+      return { violations, directives, transclusions: [] };
+    }
+    if (bodies.length === 0) continue;
+    directives++;
+    const seen = new Set<string>();
+    for (const { body, to } of bodies) {
+      budget.left -= body.length;
+      for (const v of checkExpression(body, allow)) {
+        const key = `${v.rule}\n${v.detail}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        violations.push({ ...v, line: lineOf(pos), from: pos, to });
       }
     }
-    if (depth !== 0) continue; // unbalanced: SilverBullet treats it as plain text
-    directives++;
-    const body = source.slice(pos + 2, pos + len);
-    const found = checkExpression(body, allow);
-    for (const v of found) violations.push({ ...v, line: lineOf(pos), from: pos, to: pos + len + 1 });
-    pos += len;
   }
 
   // Baked sections: `<!--#lua EXPR -->` holds an expression that "Baked Sections: Update" re-evaluates

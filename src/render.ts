@@ -476,7 +476,7 @@ end`;
  * them (docs/security.md, section 12). Every `index.*` entry of the allowlist is in one of the
  * three lists; a unit test and a release check hold them to that.
  */
-export const ROW_FUNCTIONS = ["pages", "contentPages", "metaPages", "subPages", "documents", "items", "tasks", "headers", "paragraphs", "tables", "links", "relations", "aspiringPages", "tags", "tag", "objects"];
+export const ROW_FUNCTIONS = ["pages", "contentPages", "libraryPages", "metaPages", "subPages", "documents", "data", "items", "tasks", "headers", "paragraphs", "tables", "links", "relations", "aspiringPages", "tags", "tag", "objects"];
 /** Functions that return one object: `nil`, or a miss, when its page is denied. `resolveAnchor` reads the index on its own, past the shim of `tag`. */
 export const OBJECT_FUNCTIONS = ["getObjectByRef", "resolveAnchor"];
 /** Functions that return no page data (schemas, definitions, a boolean, the parse of a given text): not filtered. */
@@ -486,7 +486,8 @@ export const NO_PAGE_DATA = ["describeSchema", "tagSchema", "aggregates", "isAva
  * The row filter: replaces the functions above with shims that keep only rows whose page the
  * caller may read, by the rules of `rowRules` plus the rendered page itself (`own`). Shims left
  * behind by an interrupted call are restored first, so the originals are never a shim; without
- * rules nothing is installed. Inline attributes set `page`, `name`, `ref` and `tag` on an object
+ * rules nothing is installed. A function the release lacks (`libraryPages` and `data` before 3.0)
+ * stays absent. Inline attributes set `page`, `name`, `ref` and `tag` on an object
  * (measured on 2.12.1), so the page of a row is: the `name` of a page or document whose `ref` is
  * that name; else the page part of a `page@pos` ref, the row dropped when its `page` differs; else
  * `page` (anchors, anchored objects, tag rows: one attribute can set it there). A row without a
@@ -556,10 +557,12 @@ local function sbmcp_rows(rules)
   local getObjectByRef = index.getObjectByRef
   for _, f in ipairs({${ROW_FUNCTIONS.map((f) => JSON.stringify(f)).join(", ")}}) do
     local orig = index[f]
-    saved[f] = orig
-    index[f] = function(...)
-      local rows = orig(...)
-      return query[[from o = rows where sbmcp_keep(o, getObjectByRef)]]
+    if orig ~= nil then
+      saved[f] = orig
+      index[f] = function(...)
+        local rows = orig(...)
+        return query[[from o = rows where sbmcp_keep(o, getObjectByRef)]]
+      end
     end
   end
   saved.getObjectByRef = getObjectByRef
@@ -600,8 +603,8 @@ export function rowRulesLua(rules: RowRules | null, page: string): string {
 
 /**
  * The render script of the spike: `markdown.expandMarkdown` of the page's source, with the
- * writing functions shadowed. `expandMarkdown(text, {pageName})` is tried first (the edge
- * release); when the instance ignores it, `_CTX` is set by hand around the call (2.12.1 sets
+ * writing functions shadowed. `expandMarkdown(text, {pageName})` is tried first (3.0); when the
+ * instance ignores it, `_CTX` is set by hand around the call (2.12.1 sets
  * none inside `expandMarkdown`), which is why calls on one runtime are serialised.
  */
 export function renderScript(page: string, rules: RowRules | null = null): string {

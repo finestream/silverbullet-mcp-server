@@ -111,7 +111,8 @@ test("review: Apply of a move renames the page and rewrites the links to it", as
   assert.match(await open("review:P/move", ".proposals-notice"), /Moves the page T\/Draft to T\/Placed/);
   assert.match(await shown(".proposals-linking"), /Pages whose links are rewritten: T\/Refers/);
   await click(".proposals-header", "Apply");
-  await until(async () => (await readPage("T/Placed")) !== null, 15000);
+  // SilverBullet 3 goes on rewriting links after the new page exists; the proposal is closed last.
+  await until(async () => (await readPage("P/move")) === null, 15000);
   assert.equal(await readPage("T/Draft"), null);
   assert.equal(await readPage("T/Placed"), text);
   assert.equal(await readPage("T/Refers"), "See [[T/Placed]] and [[T/Placed|the draft]], not [[T/Drafts]].\n");
@@ -132,7 +133,7 @@ test("review: a move out of a folder to a name that exists only as a path suffix
   const notice = await open("review:P/out", ".proposals-notice");
   assert.doesNotMatch(notice, /Cannot be applied/);
   await click(".proposals-header", "Apply");
-  await until(async () => (await readPage("T/p")) !== null, 15000);
+  await until(async () => (await readPage("P/out")) === null, 15000);
   assert.equal(await readPage("Q/T/p"), null);
   assert.equal(await readPage("T/p"), text);
   assert.equal(await readPage("P/out"), null, "Apply closed the proposal");

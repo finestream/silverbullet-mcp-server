@@ -8,6 +8,8 @@ They are **on by default**: the server ships with them enforced by its five cont
 
 ## Rules and what they imply
 
+On SilverBullet 3 the configuration page is `Library/Config`, and `CONFIG` is a page like any other: read `Library/Config` for `CONFIG` below, and `Library/` for *`CONFIG` and `Library/`*. Rule 2 is then SilverBullet's own, and the transform is not needed ([security.md](security.md), section 2).
+
 1. **Configuration lives only in `CONFIG`.** `CONFIG` is the trusted root of a space: everything in it is readable by every script that runs there, and its source stays queryable from the index. *Implication:* `CONFIG` holds no secret; a secret is held by the server that needs it.
 2. **Code lives only in `Library/`:** Space Lua, Space Style, templates and functions. `CONFIG` holds configuration code only: settings and the transform block of the server. *Implication:* a Space Lua or Space Style block anywhere else does not load, in any client; it stays visible as text, with a comment in its place in the Space Overview.
 3. **Every other page is data:** text, frontmatter, queries and calls to allowed functions. It defines no function, assigns nothing, and holds no `space-lua`, `space-config` or `space-style` block. *Implication:* a page copied in from another space may be refused for a block that would have been inert anyway; the error names the line, and the fix is to fence it as `lua` or to move it to `Library/`.
@@ -27,7 +29,7 @@ They are **on by default**: the server ships with them enforced by its five cont
 | File types `.md` only | Nothing but pages is written through the server; types that execute or are served as code never are | Add types (for example `.png`, `.csv`) | Larger surface for what arrives through the server; a type SilverBullet executes or serves as code cannot be added at all |
 | Scan on, on a schedule shorter than a browser session | Code that arrived by any route is found within one interval, and rendering in that space is refused until the operator has looked, while reading and writing continue | Scan off | Code written directly to the space stays until a person notices; the server renders in a space that may hold code |
 | Scan in report-only mode | No page but the report page is ever changed by the server | Quarantine mode | The scan edits pages: a fence becomes a `lua` fence, an expression is wrapped in backticks, the page is tagged. Reversible by hand only; a page the operator was editing may change under them |
-| Transform block in `CONFIG`, checked at start | A block outside `CONFIG` and `Library/` never loads, whatever route it took | None; the check cannot be switched off | — |
+| Transform block in `CONFIG`, checked at start (SilverBullet 2) | A block outside `CONFIG` and `Library/` never loads, whatever route it took | None; the check cannot be switched off | — |
 | Never-allowed names on the allowlist | A configuration mistake cannot admit `space.*`, `config.*`, the loaders, the metatable functions or the registries | An exact entry naming a reviewed harmless member of a never-allowed namespace, for example `os.date` ([security.md](security.md), section 6); never a wildcard, never an unreviewed member | The member runs with the rights of the reader like any other entry; the review says it only reads the clock, builds a table or reports a fact about the client |
 
 ## Alternatives considered

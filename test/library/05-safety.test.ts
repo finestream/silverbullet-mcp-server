@@ -6,7 +6,8 @@
 import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { formatProposal, type Proposal } from "../../src/proposal.ts";
-import { clean, click, configure, currentPage, freshRuntime, lua, open, readPage, revisionOf, shown, sleep, until, writePage, writeProposal } from "./lib.ts";
+import { V3 } from "../lib/env.ts";
+import { clean, click, configure, currentPage, freshRuntime, lua, open, readPage, removePage, revisionOf, shown, sleep, until, writePage, writeProposal } from "./lib.ts";
 
 test.before(async () => {
   await freshRuntime();
@@ -318,10 +319,13 @@ test("safety: nothing an agent wrote is live on the proposal page", async () => 
     reason: "Why:\n\n${1 + 1}\n\n```space-lua\n-- in the reason\n```\n   ~~~~\n```space-lua\n-- after an indented fence\n```",
     edits: [{ oldText: "Water", newText: "x\n  ~~~~~~\n```space-lua\n-- in a replacement\n```\n", expectedMatches: 1 }],
   });
-  await writePage("T/Control", "```space-lua\n-- a real block\n```\n");
+  // SilverBullet 3 indexes a block of a Library page only.
+  const control = V3 ? "Library/Control" : "T/Control";
+  await writePage(control, "```space-lua\n-- a real block\n```\n");
   const count = (p: string) => lua<number>(`return #query[[from o = index.tag "space-lua" where string.startsWith(o.ref, ${JSON.stringify(p + "@")})]]`);
-  const { value } = await until(async () => (await count("T/Control")) === 1, 15000, 300);
-  assert.ok(value, "the index lists the space-lua block of a plain page");
+  const { value } = await until(async () => (await count(control)) === 1, 15000, 300);
+  if (V3) await removePage(control);
+  assert.ok(value, "the index lists a space-lua block where the release runs one");
   assert.equal(await count("P/live"), 0);
   assert.equal(await count("P/edit"), 0);
 });

@@ -2,7 +2,7 @@
 // Runtime API on, users alice, bob and scan (the server's technical user),
 // spaces alpha, beta and gamma with their grants, one API token per user, and
 // the seed pages; and dora with the space delta, where the Proposals library
-// is installed as the repository builds it (always rewritten). Idempotent: a second run keeps what exists, except CONFIG,
+// is installed as the repository builds it (always rewritten). Idempotent: a second run keeps what exists, except the configuration page (CONFIG, or Library/Config on SilverBullet 3),
 // which is always rewritten (the checks change it), and the index pages that
 // have a seed (SilverBullet creates a stock index page with code in it).
 //
@@ -11,6 +11,7 @@
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, relative } from "node:path";
+import { majorOf } from "../../src/sb.ts";
 import { client } from "./sb.ts";
 import { configPage } from "./transform.ts";
 import { buildLibrary, LIBRARY_PAGE } from "../../scripts/build-library.ts";
@@ -115,8 +116,12 @@ export async function bootstrap(opts: BootstrapOptions = {}) {
       expect(`seeded ${space}/${path}`, r, [200, 201, 204]);
     }
   }
+  const release = await sb.release(tokens.admin, SPACES.alpha);
+  const v3 = (majorOf(release) ?? 2) >= 3;
   for (const space of Object.values(SPACES)) {
-    expect(`CONFIG of ${space}`, await sb.write(tokens.admin, space, "CONFIG.md", configPage("shipped")), [200, 201, 204]);
+    // On SilverBullet 3 a root CONFIG would be an ordinary page that holds code, a finding of the server's scan.
+    if (v3) await sb.remove(tokens.admin, space, "CONFIG.md");
+    expect(`configuration of ${space}`, await sb.write(tokens.admin, space, v3 ? "Library/Config.md" : "CONFIG.md", configPage("shipped")), [200, 201, 204]);
     // SilverBullet's stock index page calls config.get and widgets.*; a space with a seeded index is kept clean for the server's scan.
     const index = join(seedRoot, space, "index.md");
     if (existsSync(index)) expect(`index of ${space}`, await sb.write(tokens.admin, space, "index.md", readFileSync(index)), [200, 201, 204]);
@@ -126,6 +131,7 @@ export async function bootstrap(opts: BootstrapOptions = {}) {
 
   const envText = [
     `SB_URL=${url}`,
+    `SB_RELEASE=${release}`,
     `SB_TOKEN_ADMIN=${tokens.admin}`,
     `SB_TOKEN_ALICE=${tokens.alice}`,
     `SB_TOKEN_BOB=${tokens.bob}`,
